@@ -61,7 +61,7 @@ module Fluent
 
     def suppress_interval(interval_time)
       @suppress_emit_error_log_interval = interval_time
-      @next_emit_error_log_time = Time.now.to_i
+      @next_emit_error_log_time = Time.now.to_f
     end
 
     def parse_config(io, fname, basepath = Dir.pwd, v1_config = false)
@@ -122,7 +122,7 @@ module Fluent
 
     def now
       # TODO thread update
-      Time.now.to_i
+      Time.now.to_f
     end
 
     def log_event_loop

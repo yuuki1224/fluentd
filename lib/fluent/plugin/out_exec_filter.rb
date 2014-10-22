@@ -113,9 +113,9 @@ module Fluent
 
       if @out_time_key
         if f = @out_time_format
-          @time_parse_proc = Proc.new {|str| Time.strptime(str, f).to_i }
+          @time_parse_proc = Proc.new {|str| Time.strptime(str, f).to_f }
         else
-          @time_parse_proc = Proc.new {|str| str.to_i }
+          @time_parse_proc = Proc.new {|str| str.to_f }
         end
       elsif @out_time_format
         log.warn "out_time_format effects nothing when out_time_key is not specified: #{conf}"
@@ -164,7 +164,7 @@ module Fluent
                   end
 
       @suppress_error_log_interval ||= 0
-      @next_log_time = Time.now.to_i
+      @next_log_time = Time.now.to_f
     end
 
     def start
@@ -346,10 +346,10 @@ module Fluent
 
       router.emit(tag, time, record)
     rescue
-      if @suppress_error_log_interval == 0 || Time.now.to_i > @next_log_time
+      if @suppress_error_log_interval == 0 || Time.now.to_f > @next_log_time
         log.error "exec_filter failed to emit", :error=>$!.to_s, :error_class=>$!.class.to_s, :record=>Yajl.dump(record)
         log.warn_backtrace $!.backtrace
-        @next_log_time = Time.now.to_i + @suppress_error_log_interval
+        @next_log_time = Time.now.to_f + @suppress_error_log_interval
       end
     end
   end

@@ -117,7 +117,7 @@ class Writer
     @connector = connector
     @socket = false
 
-    @socket_time = Time.now.to_i
+    @socket_time = Time.now.to_f
     @socket_ttl = 10  # TODO
     @error_history = []
 
@@ -134,7 +134,7 @@ class Writer
       raise ArgumentError, "Input must be a map (got #{record.class})"
     end
 
-    entry = [Time.now.to_i, record]
+    entry = [Time.now.to_f, record]
     synchronize {
       unless write_impl([entry])
         # write failed
@@ -150,7 +150,7 @@ class Writer
   end
 
   def on_timer
-    now = Time.now.to_i
+    now = Time.now.to_f
 
     synchronize {
       unless @pending.empty?
@@ -209,12 +209,12 @@ class Writer
       end
     end
 
-    @socket_time = Time.now.to_i
+    @socket_time = Time.now.to_f
     return @socket
   end
 
   def try_connect
-    now = Time.now.to_i
+    now = Time.now.to_f
 
     unless @error_history.empty?
       # wait before re-connecting

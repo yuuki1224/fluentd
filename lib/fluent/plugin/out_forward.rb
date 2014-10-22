@@ -107,7 +107,7 @@ module Fluent
           name = "#{host}:#{port}"
         end
 
-        failure = FailureDetector.new(@heartbeat_interval, @hard_timeout, Time.now.to_i.to_f)
+        failure = FailureDetector.new(@heartbeat_interval, @hard_timeout, Time.now.to_f)
 
         node_conf = NodeConfig.new(name, host, port, weight, standby, failure,
           @phi_threshold, recover_sample_size, @expire_dns_cache, @phi_failure_detector)

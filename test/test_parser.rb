@@ -80,7 +80,7 @@ module ParserTest
     end
 
     def test_call_without_time
-      time_at_start = Time.now.to_i
+      time_at_start = Time.now.to_f
       text = "tagomori_satoshi tagomoris 34\n"
 
       parser = TextParser::RegexpParser.new(Regexp.new(%q!^(?<name>[^ ]*) (?<user>[^ ]*) (?<age>\d*)$!))
@@ -265,7 +265,7 @@ module ParserTest
     end
 
     def test_call_without_time
-      time_at_start = Time.now.to_i
+      time_at_start = Time.now.to_f
 
       @parser.call('{"host":"192.168.0.1","size":777,"method":"PUT"}') { |time, record|
         assert time && time >= time_at_start, "parser puts current time without time input"
@@ -358,7 +358,7 @@ module ParserTest
     end
 
     def test_call_with_time
-      time_at_start = Time.now.to_i
+      time_at_start = Time.now.to_f
 
       parser = TextParser::TSVParser.new
       parser.configure('keys' => 'a,b')
@@ -399,7 +399,7 @@ module ParserTest
     end
 
     def test_call_without_time
-      time_at_start = Time.now.to_i
+      time_at_start = Time.now.to_f
 
       parser = TextParser::CSVParser.new
       parser.configure('keys' => 'c,d')
@@ -485,7 +485,7 @@ module ParserTest
     end
 
     def test_call_without_time
-      time_at_start = Time.now.to_i
+      time_at_start = Time.now.to_f
 
       parser = TextParser::LabeledTSVParser.new
       parser.configure({})
@@ -539,7 +539,7 @@ module ParserTest
     end
 
     def test_call_without_default_time
-      time_at_start = Time.now.to_i
+      time_at_start = Time.now.to_f
 
       parser = TextParser::TEMPLATE_REGISTRY.lookup('none').call
       parser.configure({})

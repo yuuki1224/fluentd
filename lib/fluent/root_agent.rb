@@ -137,7 +137,7 @@ module Fluent
 
     def suppress_interval(interval_time)
       @suppress_emit_error_log_interval = interval_time
-      @next_emit_error_log_time = Time.now.to_i
+      @next_emit_error_log_time = Time.now.to_f
     end
 
     def add_source(type, conf)
