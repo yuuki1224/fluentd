@@ -35,6 +35,8 @@ class Hash
   end
 end
 
+$_IN_TEST = true
+
 require 'rr'
 require 'test/unit'
 require 'test/unit/rr'
