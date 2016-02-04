@@ -13,9 +13,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 #
-module Fluent
-  require 'fluent/match'
+require 'fluent/match'
+require 'fluent/event'
 
+module Fluent
   #
   # EventRouter is responsible to route events to a collector.
   #
@@ -43,7 +44,8 @@ module Fluent
       @match_cache = MatchCache.new
       @default_collector = default_collector
       @emit_error_handler = emit_error_handler
-      @chain = NullOutputChain.instance
+      # @chain = NullOutputChain.instance
+      @chain = nil
     end
 
     attr_accessor :default_collector
