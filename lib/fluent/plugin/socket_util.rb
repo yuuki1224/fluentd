@@ -18,8 +18,9 @@ require 'cool.io'
 
 module Fluent
   # Obsolete in v0.14
-  #   Use TCPServer / UDPServer of PluginSupport instead
+  #   Use Socket / TCPServer / UDPServer of PluginSupport instead
   module SocketUtil
+    # obsolete in v0.14
     def create_udp_socket(host)
       require 'ipaddr'
 

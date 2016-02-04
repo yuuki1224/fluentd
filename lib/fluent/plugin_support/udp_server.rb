@@ -17,9 +17,6 @@
 require 'fluent/plugin_support/event_loop'
 require 'fluent/plugin_support/socket'
 
-require 'socket'
-require 'ipaddr'
-
 module Fluent
   module PluginSupport
     module UDPServer
@@ -32,11 +29,7 @@ module Fluent
 
         socket_listener_add('udp', bind, port)
 
-        bind_sock = if IPAddr.new(IPSocket.getaddress(bind)).ipv4?
-                      UDPSocket.new
-                    else
-                      UDPSocket.new(::Socket::AF_INET6)
-                    end
+        bind_sock = socket_create_udp(bind)
         bind_sock.bind(bind, port)
 
         if self.respond_to?(:detach_multi_process)

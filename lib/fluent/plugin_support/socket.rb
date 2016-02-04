@@ -14,12 +14,23 @@
 #    limitations under the License.
 #
 
+require 'socket'
+require 'ipaddr'
+
 module Fluent
   module PluginSupport
     module Socket
       SockInfo = Struct.new(:proto, :bind, :port)
 
       attr_reader :_listener_states
+
+      def socket_create_udp(address)
+        if IPAddr.new(IPSocket.getaddress(address)).ipv4?
+          UDPSocket.new
+        else
+          UDPSocket.new(::Socket::AF_INET6)
+        end
+      end
 
       def initialize
         super
