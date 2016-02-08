@@ -266,15 +266,17 @@ class ForwardInputTest < Test::Unit::TestCase
 
     time = Fluent::EventTime.parse("2011-01-02 13:14:15 UTC")
 
-    d.expect_emit "tag1", time, {"a" => 1}
-    d.expect_emit "tag1", time, {"a" => 2}
+    records = [
+      ["tag1", time, {"a" => 1}],
+      ["tag1", time, {"a" => 2}],
+    ]
 
     d.run do
-      entries = d.expected_emits.map { |tag, time, record| [time, record] }
+      entries = records.map { |tag, time, record| [time, record] }
       # These entries are skipped
       entries << ['invalid time', {'a' => 3}] << [time, 'invalid record']
 
-      send_data auth, ssl, Fluent::Engine.msgpack_factory.packer.write(["tag1", entries]).to_s
+      send_data auth, ssl, pack_event("tag1", entries)
     end
     assert_equal 2, d.instance.log.logs.count { |line| line =~ /skip invalid event/ }
     assert_equal records[0], d.emits[0]

@@ -60,14 +60,17 @@ class HttpInputTest < Test::Unit::TestCase
     float_time = Time.parse("2011-01-02 13:14:15.123 UTC").to_f
     time = Fluent::EventTime.from_time(Time.at(float_time))
 
-    d.expect_emit "tag1", time, {"a"=>1}
+    records = [
+      ["tag1", time, {"a"=>1}],
+    ]
 
     d.run do
-      d.expected_emits.each {|tag,time,record|
+      records.each do |tag,time,record|
         res = post("/#{tag}", {"json"=>record.to_json, "time"=>float_time.to_s})
         assert_equal "200", res.code
-      }
+      end
     end
+    assert_equal records, d.emits
   end
 
   def test_json
@@ -117,16 +120,18 @@ class HttpInputTest < Test::Unit::TestCase
     d = create_driver(CONFIG + "add_remote_addr true")
     time = Time.parse("2011-01-02 13:14:15 UTC").to_i
 
-    d.expect_emit "tag1", time, {"REMOTE_ADDR"=>"127.0.0.1", "a"=>1}
-    d.expect_emit "tag2", time, {"REMOTE_ADDR"=>"127.0.0.1", "a"=>2}
+    records = [
+      ["tag1", time, {"REMOTE_ADDR"=>"127.0.0.1", "a"=>1}],
+      ["tag2", time, {"REMOTE_ADDR"=>"127.0.0.1", "a"=>2}],
+    ]
 
     d.run do
-      d.expected_emits.each {|tag,time,record|
+      records.each do |tag,time,record|
         res = post("/#{tag}", {"json"=>record.to_json, "time"=>time.to_s})
         assert_equal "200", res.code
-      }
+      end
     end
-
+    assert_equal records, d.emits
   end
 
   def test_multi_json_with_add_remote_addr
@@ -136,14 +141,16 @@ class HttpInputTest < Test::Unit::TestCase
     events = [{"a"=>1},{"a"=>2}]
     tag = "tag1"
 
-    d.expect_emit "tag1", time, {"REMOTE_ADDR"=>"127.0.0.1", "a"=>1}
-    d.expect_emit "tag1", time, {"REMOTE_ADDR"=>"127.0.0.1", "a"=>2}
+    records = [
+      ["tag1", time, {"REMOTE_ADDR"=>"127.0.0.1", "a"=>1}],
+      ["tag1", time, {"REMOTE_ADDR"=>"127.0.0.1", "a"=>2}],
+    ]
 
     d.run do
       res = post("/#{tag}", {"json"=>events.to_json, "time"=>time.to_s})
       assert_equal "200", res.code
     end
-
+    assert_equal records, d.emits
   end
 
   def test_multi_json_with_add_http_headers

@@ -13,14 +13,17 @@ module StreamInputTest
     time = Fluent::EventTime.parse("2011-01-02 13:14:15 UTC")
     Fluent::Engine.now = time
 
-    d.expect_emit "tag1", time, {"a"=>1}
-    d.expect_emit "tag2", time, {"a"=>2}
+    records = [
+      ["tag1", time, {"a"=>1}],
+      ["tag2", time, {"a"=>2}],
+    ]
 
     d.run do
-      d.expected_emits.each {|tag,time,record|
-        send_data Fluent::Engine.msgpack_factory.packer.write([tag, 0, record]).to_s
-      }
+      records.each do |tag,time,record|
+        send_data pack_event(tag, 0, record)
+      end
     end
+    assert_equal records, d.emits
   end
 
   def test_message
@@ -28,14 +31,17 @@ module StreamInputTest
 
     time = Fluent::EventTime.parse("2011-01-02 13:14:15 UTC")
 
-    d.expect_emit "tag1", time, {"a"=>1}
-    d.expect_emit "tag2", time, {"a"=>2}
+    records = [
+      ["tag1", time, {"a"=>1}],
+      ["tag2", time, {"a"=>2}],
+    ]
 
     d.run do
-      d.expected_emits.each {|tag,time,record|
-        send_data Fluent::Engine.msgpack_factory.packer.write([tag, time, record]).to_s
-      }
+      records.each do |tag,time,record|
+        send_data pack_event(tag, time, record)
+      end
     end
+    assert_equal records, d.emits
   end
 
   def test_forward
@@ -43,16 +49,20 @@ module StreamInputTest
 
     time = Fluent::EventTime.parse("2011-01-02 13:14:15 UTC")
 
-    d.expect_emit "tag1", time, {"a"=>1}
-    d.expect_emit "tag1", time, {"a"=>2}
+    records = [
+      ["tag1", time, {"a"=>1}],
+      ["tag1", time, {"a"=>2}],
+    ]
 
     d.run do
       entries = []
-      d.expected_emits.each {|tag,time,record|
+
+      records.each do |tag,time,record|
         entries << [time, record]
-      }
-      send_data Fluent::Engine.msgpack_factory.packer.write(["tag1", entries]).to_s
+      end
+      send_data pack_event("tag1", entries)
     end
+    assert_equal records, d.emits
   end
 
   def test_packed_forward
@@ -60,16 +70,19 @@ module StreamInputTest
 
     time = Fluent::EventTime.parse("2011-01-02 13:14:15 UTC")
 
-    d.expect_emit "tag1", time, {"a"=>1}
-    d.expect_emit "tag1", time, {"a"=>2}
+    records = [
+      ["tag1", time, {"a"=>1}],
+      ["tag1", time, {"a"=>2}],
+    ]
 
     d.run do
       entries = ''
-      d.expected_emits.each {|tag,time,record|
-        Fluent::Engine.msgpack_factory.packer(entries).write([time, record]).flush
-      }
-      send_data Fluent::Engine.msgpack_factory.packer.write(["tag1", entries]).to_s
+      records.each do |tag,time,record|
+        entries << pack_event(time, record)
+      end
+      send_data pack_event("tag1", entries)
     end
+    assert_equal records, d.emits
   end
 
   def test_message_json
@@ -77,14 +90,17 @@ module StreamInputTest
 
     time = Time.parse("2011-01-02 13:14:15 UTC").to_i
 
-    d.expect_emit "tag1", time, {"a"=>1}
-    d.expect_emit "tag2", time, {"a"=>2}
+    records = [
+      ["tag1", time, {"a"=>1}],
+      ["tag2", time, {"a"=>2}],
+    ]
 
     d.run do
-      d.expected_emits.each {|tag,time,record|
+      records.each do |tag,time,record|
         send_data [tag, time, record].to_json
-      }
+      end
     end
+    assert_equal records, d.emits
   end
 
   def create_driver(klass, conf)

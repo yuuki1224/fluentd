@@ -77,3 +77,9 @@ def ipv6_enabled?
     false
   end
 end
+
+def pack_event(*args)
+  # pack_event(tag, time, record) -> [tag, time, record].to_msgpack
+  # pack_event(tag, [ [time, record], [time, record] ]) -> ...
+  Fluent::Engine.msgpack_factory.packer.write(args).to_s
+end
