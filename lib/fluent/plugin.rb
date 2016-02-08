@@ -98,7 +98,13 @@ module Fluent
     end
 
     def self.new_parser(type)
-      new_impl('parser', PARSER_REGISTRY, type)
+      if type[0] == '/' && type[-1] == '/'
+        # This path is not recommended for new API... create RegexpParser directly
+        require 'fluent/parser'
+        Fluent::TextParser.wrap(type[1..-2])
+      else
+        new_impl('parser', PARSER_REGISTRY, type)
+      end
     end
 
     def self.new_formatter(type)

@@ -656,10 +656,20 @@ module Fluent
       Fluent::Plugin.register_parser(name, factory)
     end
 
+    def self.wrap(regexp_string)
+      regexp = Regexp.new(regexp_string)
+      if regexp.named_captures.empty?
+        raise ConfigError, "Invalid regexp '#{regexp}': No named captures"
+      end
+      RegexpParser.new(regexp)
+    end
+
     def self.lookup(format)
       if format.nil?
         raise ConfigError, "'format' parameter is required"
       end
+
+      # TODO: remove this and use Plugin.new_parser(...)
 
       if format[0] == ?/ && format[format.length-1] == ?/
         # regexp
