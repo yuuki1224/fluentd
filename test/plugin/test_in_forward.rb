@@ -17,6 +17,7 @@ class ForwardInputTest < Test::Unit::TestCase
     port #{PORT}
     bind 127.0.0.1
   ]
+  PEERADDR = ['?', '0000', '127.0.0.1', '127.0.0.1']
 
   def create_driver(conf=CONFIG)
     Fluent::Test::InputTestDriver.new(Fluent::ForwardInput).configure(conf)
@@ -246,7 +247,7 @@ class ForwardInputTest < Test::Unit::TestCase
 
     d.run do
       Fluent::Engine.msgpack_factory.unpacker.feed_each(chunk) do |obj|
-        d.instance.send(:on_message, obj, chunk.size, "host: 127.0.0.1, addr: 127.0.0.1, port: 0000")
+        d.instance.send(:on_message, obj, chunk.size, PEERADDR)
       end
     end
 
@@ -275,7 +276,7 @@ class ForwardInputTest < Test::Unit::TestCase
 
     d.run do
       Fluent::Engine.msgpack_factory.unpacker.feed_each(chunk) do |obj|
-        d.instance.send(:on_message, obj, chunk.size, "host: 127.0.0.1, addr: 127.0.0.1, port: 0000")
+        d.instance.send(:on_message, obj, chunk.size, PEERADDR)
       end
     end
 
@@ -302,7 +303,7 @@ class ForwardInputTest < Test::Unit::TestCase
     # d.run => send_data
     d.run do
       Fluent::Engine.msgpack_factory.unpacker.feed_each(chunk) do |obj|
-        d.instance.send(:on_message, obj, chunk.size, "host: 127.0.0.1, addr: 127.0.0.1, port: 0000")
+        d.instance.send(:on_message, obj, chunk.size, PEERADDR)
       end
     end
 
@@ -324,7 +325,7 @@ class ForwardInputTest < Test::Unit::TestCase
 
     # d.run => send_data
     d.run do
-      d.instance.send(:on_message, data, 1000000000, "host: 127.0.0.1, addr: 127.0.0.1, port: 0000")
+      d.instance.send(:on_message, data, 1000000000, PEERADDR)
     end
 
     # check emitted data
@@ -545,6 +546,55 @@ class ForwardInputTest < Test::Unit::TestCase
       io.close
     end
     @responses << res if try_to_receive_response
+  end
+
+  sub_test_case 'source_host_key' do
+    test 'message protocol' do
+      execute_test { |events|
+        events.each { |tag, time, record|
+          send_data [tag, time, record].to_msgpack
+        }
+      }
+    end
+
+    test 'forward protocol' do
+      execute_test { |events|
+        entries = []
+        events.each {|tag,time,record|
+          entries << [time, record]
+        }
+        send_data ['tag1', entries].to_msgpack
+      }
+    end
+
+    test 'packed forward protocol' do
+      execute_test { |events|
+        entries = ''
+        events.each { |tag, time, record|
+          Fluent::Engine.msgpack_factory.packer(entries).write([time, record]).flush
+        }
+        send_data Fluent::Engine.msgpack_factory.packer.write(["tag1", entries]).to_s
+      }
+    end
+
+    def execute_test(&block)
+      d = create_driver(CONFIG + 'source_host_key source')
+
+      time = Fluent::EventTime.parse("2011-01-02 13:14:15 UTC")
+      events = [
+        ["tag1", time, {"a"=>1}],
+        ["tag1", time, {"a"=>2}]
+      ]
+      d.expected_emits_length = events.length
+
+      d.run do
+        block.call(events)
+      end
+
+      d.emits.each { |tag, time, record|
+        assert_true record.has_key?('source')
+      }
+    end
   end
 
   # TODO heartbeat
