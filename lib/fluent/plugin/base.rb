@@ -58,6 +58,8 @@ module Fluent
         self
       end
 
+      # TBD: before_shutdown ?
+
       def shutdown
         @state.shutdown = true
         self
