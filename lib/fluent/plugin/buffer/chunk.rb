@@ -14,6 +14,7 @@
 #    limitations under the License.
 #
 
+require 'fluent/msgpack_factory'
 require 'fluent/plugin/buffer'
 
 require 'fileutils'
@@ -24,6 +25,7 @@ module Fluent
     class Buffer
       class Chunk
         include MonitorMixin
+        include MessagePackFactory::Mixin
 
         # Chunks has 2 part:
         # * metadata: contains metadata which should be restored after resume (if possible)
@@ -109,8 +111,9 @@ module Fluent
         end
 
         def msgpack_each(&block)
+          require 'fluent/engine'
           open do |io|
-            u = Fluent::Engine.msgpack_factory.unpacker.new(io)
+            u = msgpack_factory.unpacker(io)
             begin
               u.each(&block)
             rescue EOFError

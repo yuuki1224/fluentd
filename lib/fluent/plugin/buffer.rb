@@ -33,7 +33,7 @@ module Fluent
       MINIMUM_APPEND_ATTEMPT_RECORDS = 10
 
       DEFAULT_CHUNK_BYTES_LIMIT =   8 * 1024 * 1024 # 8MB
-      DEFAULT_TOTAL_BYTES_LIMIT = 256 * 1024 * 1024 # 256MB
+      DEFAULT_TOTAL_BYTES_LIMIT = 512 * 1024 * 1024 # 512MB, same with v0.12 (BufferedOutput + buf_memory: 64 x 8MB)
 
       # TODO: system total buffer bytes limit by SystemConfig
 
@@ -68,7 +68,18 @@ module Fluent
         @_plugin_id_configured = false
       end
 
-      # TODO: make "owner" same with storages
+      def persistent?
+        false
+      end
+
+      def owner=(plugin)
+        @_owner = plugin
+
+        @_plugin_id = plugin.plugin_id
+        @_plugin_id_configured = plugin.plugin_id_configured?
+
+        @log = plugin.log
+      end
 
       def configure(conf)
         super
@@ -81,15 +92,6 @@ module Fluent
       def plugin_id(id, configured)
         @_plugin_id = id
         @_plugin_id_configured = configured
-      end
-
-      def owner=(plugin)
-        @_owner = plugin
-
-        @_plugin_id = plugin.plugin_id
-        @_plugin_id_configured = plugin.plugin_id_configured?
-
-        @log = plugin.log
       end
 
       def owner
@@ -164,21 +166,29 @@ module Fluent
         end
       end
 
-      def metadata(timekey: nil, tag: nil, key_value_pairs: {})
-        meta = if key_value_pairs.empty?
-                 Metadata.new(timekey, tag, [])
-               else
-                 variables = key_value_pairs.keys.sort.map{|k| key_value_pairs[k] }
-                 Metadata.new(timekey, tag, variables)
-               end
+      def new_metadata(timekey: nil, tag: nil, variables: [])
+        Metadata.new(timekey, tag, variables)
+      end
+
+      def add_metadata(metadata)
         synchronize do
-          if i = @metadata_list.index(meta)
+          if i = @metadata_list.index(metadata)
             @metadata_list[i]
           else
-            @metadata_list << meta
-            meta
+            @metadata_list << metadata
           end
         end
+      end
+
+      def metadata(timekey: nil, tag: nil, key_value_pairs: {})
+        meta = if key_value_pairs.empty?
+                 new_metadata(timekey: timekey, tag: tag, variables: [])
+               else
+                 variables = key_value_pairs.keys.sort.map{|k| key_value_pairs[k] }
+                 new_meatadata(timekey: timekey, tag: tag, variables: variables)
+               end
+        add_metadata(meta)
+        meta
       end
 
       # metadata MUST have consistent object_id for each variation
@@ -230,9 +240,16 @@ module Fluent
       def enqueue_chunk(metadata)
         synchronize do
           chunk = @stage.delete(metadata)
-          if chunk && !chunk.empty?
-            @queue << chunk
-            @queued_num[metadata] = @queued_num.fetch(metadata, 0) + 1
+          if chunk
+            chunk.synchronize do
+              if chunk.empty?
+                chunk.close
+              else
+                @queue << chunk
+                @queued_num[metadata] = @queued_num.fetch(metadata, 0) + 1
+                chunk.enqueued! if chunk.respond_to?(:enqueued!)
+              end
+            end
           end
           nil
         end

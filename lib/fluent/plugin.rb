@@ -105,24 +105,36 @@ module Fluent
       new_impl('filter', FILTER_REGISTRY, type)
     end
 
-    def self.new_buffer(type)
-      new_impl('buffer', BUFFER_REGISTRY, type)
+    def self.new_buffer(type, parent: nil)
+      impl = new_impl('buffer', BUFFER_REGISTRY, type)
+      if parent && impl.respond_to?(:"owner=")
+        impl.owner = parent
+      end
+      impl
     end
 
-    def self.new_parser(type)
+    def self.new_parser(type, parent: nil)
       require 'fluent/parser'
 
-      if type[0] == '/' && type[-1] == '/'
-        # This usage is not recommended for new API... create RegexpParser directly
-        require 'fluent/parser'
-        Fluent::TextParser.lookup(type)
-      else
-        new_impl('parser', PARSER_REGISTRY, type)
+      impl = if type[0] == '/' && type[-1] == '/'
+               # This usage is not recommended for new API... create RegexpParser directly
+               require 'fluent/parser'
+               Fluent::TextParser.lookup(type)
+             else
+               new_impl('parser', PARSER_REGISTRY, type)
+             end
+      if parent && impl.respond_to?(:"owner=")
+        impl.owner = parent
       end
+      impl
     end
 
-    def self.new_formatter(type)
-      new_impl('formatter', FORMATTER_REGISTRY, type)
+    def self.new_formatter(type, parent: nil)
+      impl = new_impl('formatter', FORMATTER_REGISTRY, type)
+      if parent && impl.respond_to?(:"owner=")
+        impl.owner = parent
+      end
+      impl
     end
 
     def self.new_storage(type)
