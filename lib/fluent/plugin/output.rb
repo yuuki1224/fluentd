@@ -15,14 +15,51 @@
 #
 
 require 'fluent/plugin/base'
+require 'fluent/plugin_helper/thread'
 
 module Fluent
   module Plugin
     class Output < Base
+      helpers :thread
 
+      # `<buffer>` and `<secondary>` sections are available only when '#format' and '#write' are implemented
       config_section :buffer, param_name: :buf_config, required: false, multi: false, final: true do
         config_argument(:chunk_keys, default: nil){ v.start_with?("[") ? JSON.load(v) : v.to_s.strip.split(/\s*,\s*/) } # TODO: use string_list
-        
+        config_param :@type, :string, default: 'memory'
+
+        desc 'If true, plugin will try to flush buffer just before shutdown.'
+        config_param :flush_at_shutdown, :bool, default: nil # change default by buffer_plugin.persistent?
+
+        config_param :flush_interval, :time, default: 60, desc: 'The interval between buffer flushes.'
+        config_param :flush_threads, :integer, default: 1, desc: 'The number of threads to flush the buffer.'
+        config_param :flush_immediately, :bool, default: false, desc: 'If true, plugin will try to flush buffer immediately after events arrive.'
+
+        config_param :flush_tread_interval, :float, default: 1.0, desc: 'Seconds to sleep between checks for buffer flushes in flush threads.'
+        config_param :flush_burst_interval, :float, default: 1.0, desc: 'Seconds to sleep between flushes when many buffer chunks are queued.'
+
+        config_param :retry_forever, :bool, default: false, desc: 'If true, plugin will ignore retry_limit_* options and retry flushing forever.'
+        config_param :retry_limit_time,  :time, default: 72 * 60 * 60, desc: 'The maximum seconds to retry to flush while failing, until plugin discards buffer chunks.'
+        # 72hours == 17 times with exponential backoff (not to change default behavior)
+        config_param :retry_limit_times, :integer, default: nil, desc: 'The maximum number of times to retry to flush while failing.'
+
+        config_param :retry_secondary_threshold, :integer, default: 80, desc: 'Percentage of retry_limit_* to switch to use secondary while failing.'
+        # expornential backoff sequence will be initialized at the time of this threshold
+
+        desc 'How to wait next retry to flush buffer.'
+        config_param :retry_type, :enum, list: [:expbackoff, :periodic], default: :expbackoff
+        ### Periodic -> fixed :retry_wait
+        ### Exponencial backoff: k is number of retry times
+        # c: constant factor, @retry_wait
+        # b: base factor, @retry_backoff_base
+        # k: times
+        # total retry time: c + c * b^1 + (...) + c*b^k = c*b^(k+1) - 1
+        config_param :retry_wait, :time, default: 1, desc: 'Seconds to wait before next retry to flush, or constant factor of exponential backoff.'
+        config_param :retry_backoff_base, :float, default: 2, desc: 'The base number of exponencial backoff for retries.'
+        config_param :retry_max_interval, :time, default: nil, desc: 'The maximum interval seconds for exponencial backoff between retries while failing.'
+      end
+
+      config_section :secondary, param_name: :secondary_config, required: false, multi: false, final: true do
+        config_param :@type, :string, default: nil
       end
 
       def process(tag, es)
@@ -39,6 +76,13 @@ module Fluent
 
       def try_write(chunk)
         raise NotImplementedError, "BUG: output plugins MUST implement this method"
+      end
+
+      def prefer_buffered_processing
+        # override this method to return false only when all of these are true:
+        #  * plugin has both implementation for buffered and non-buffered methods
+        #  * plugin is expected to work as non-buffered plugin if no `<buffer>` sections specified
+        true
       end
 
       def configure(conf)
@@ -62,6 +106,37 @@ module Fluent
       def emit(tag, es)
         if self.class.instance_methods.include?(:process)
         end
+      end
+
+      def flush_thread_run
+        # If the given clock_id is not supported, Errno::EINVAL is raised.
+        clock_id = Process::CLOCK_MONOTONIC rescue Process::CLOCK_MONOTONIC_RAW
+        next_time = Process.clock_gettime(clock_id) + 1.0
+
+        begin
+          until thread_current_running?
+            time = Process.clock_gettime(clock_id)
+            interval = @next_time - time
+
+              if @delayed_purge_enabled && @dequeued_chunks_mutex.synchronize{ !@dequeued_chunks.empty? }
+                @output.try_rollback_write
+              end
+
+              if @next_time < time
+                @output.try_flush
+                interval = @output.next_flush_time.to_f - Time.now.to_f
+                @next_time = Process.clock_gettime(clock_id) + interval
+              end
+
+              sleep interval
+            end
+          rescue => e
+            # normal errors are rescued by output plugins in #try_flush
+            # so this rescue section is for critical & unrecoverable errors
+            @log.error "error on output thread", error_class: e.class.to_s, error: e.to_s
+            @log.error_backtrace
+            raise
+          end
       end
     end
   end

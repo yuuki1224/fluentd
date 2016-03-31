@@ -47,8 +47,6 @@ module Fluent
       # optional new limitations
       config_param :chunk_records_limit, :integer, default: nil
 
-      # TODO: pipeline mode? to flush ASAP after emit (should it be by output?)
-
       attr_accessor :log
 
       Metadata = Struct.new(:timekey, :tag, :variables)
