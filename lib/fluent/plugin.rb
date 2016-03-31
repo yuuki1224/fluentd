@@ -126,8 +126,8 @@ module Fluent
       new_impl('formatter', FORMATTER_REGISTRY, type, parent)
     end
 
-    def self.new_storage(type)
-      new_impl('storage', STORAGE_REGISTRY, type)
+    def self.new_storage(type, parent: nil)
+      new_impl('storage', STORAGE_REGISTRY, type, parent)
     end
 
     def self.register_impl(kind, registry, type, value)
