@@ -106,35 +106,24 @@ module Fluent
     end
 
     def self.new_buffer(type, parent: nil)
-      impl = new_impl('buffer', BUFFER_REGISTRY, type)
-      if parent && impl.respond_to?(:"owner=")
-        impl.owner = parent
-      end
-      impl
+      new_impl('buffer', BUFFER_REGISTRY, type, parent)
     end
 
     def self.new_parser(type, parent: nil)
       require 'fluent/parser'
 
-      impl = if type[0] == '/' && type[-1] == '/'
-               # This usage is not recommended for new API... create RegexpParser directly
-               require 'fluent/parser'
-               Fluent::TextParser.lookup(type)
-             else
-               new_impl('parser', PARSER_REGISTRY, type)
-             end
-      if parent && impl.respond_to?(:"owner=")
-        impl.owner = parent
+      if type[0] == '/' && type[-1] == '/'
+        # This usage is not recommended for new API... create RegexpParser directly
+        require 'fluent/parser'
+        Fluent::TextParser.lookup(type)
+      else
+        new_impl('parser', PARSER_REGISTRY, type, parent)
       end
       impl
     end
 
     def self.new_formatter(type, parent: nil)
-      impl = new_impl('formatter', FORMATTER_REGISTRY, type)
-      if parent && impl.respond_to?(:"owner=")
-        impl.owner = parent
-      end
-      impl
+      new_impl('formatter', FORMATTER_REGISTRY, type, parent)
     end
 
     def self.new_storage(type)
@@ -150,17 +139,21 @@ module Fluent
       nil
     end
 
-    def self.new_impl(kind, registry, type)
+    def self.new_impl(kind, registry, type, parent)
       # "'type' not found" is handled by registry
       obj = registry.lookup(type)
-      case
-      when obj.is_a?(Class)
-        obj.new
-      when obj.respond_to?(:call) && obj.arity == 0
-        obj.call
-      else
-        raise Fluent::ConfigError, "#{kind} plugin '#{type}' is not a Class nor callable (without arguments)."
+      impl = case
+             when obj.is_a?(Class)
+               obj.new
+             when obj.respond_to?(:call) && obj.arity == 0
+               obj.call
+             else
+               raise Fluent::ConfigError, "#{kind} plugin '#{type}' is not a Class nor callable (without arguments)."
+             end
+      if parent && impl.respond_to?(:"owner=")
+        impl.owner = parent
       end
+      impl
     end
   end
 end

@@ -30,11 +30,11 @@ module Fluent
       include PluginLoggerMixin
       include PluginHelper::Mixin
 
-      State = Struct.new(:configure, :start, :stop, :shutdown, :close, :terminate)
+      State = Struct.new(:configure, :start, :stop, :before_shutdown, :shutdown, :close, :terminate)
 
       def initialize
         super
-        @state = State.new(false, false, false, false, false, false)
+        @state = State.new(false, false, false, false, false, false, false)
       end
 
       def has_router?
@@ -58,7 +58,10 @@ module Fluent
         self
       end
 
-      # TBD: before_shutdown ?
+      def before_shutdown
+        @state.before_shutdown = true
+        self
+      end
 
       def shutdown
         @state.shutdown = true
@@ -86,6 +89,10 @@ module Fluent
 
       def stopped?
         @state.stop
+      end
+
+      def before_shutdown?
+        @state.before_shutdown
       end
 
       def shutdown?
