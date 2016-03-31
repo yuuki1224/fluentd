@@ -23,6 +23,7 @@ module Fluent
       helpers :thread
 
       # `<buffer>` and `<secondary>` sections are available only when '#format' and '#write' are implemented
+      # TODO: add `init: true` after merge of #877
       config_section :buffer, param_name: :buf_config, required: false, multi: false, final: true do
         config_argument(:chunk_keys, default: nil){ v.start_with?("[") ? JSON.load(v) : v.to_s.strip.split(/\s*,\s*/) } # TODO: use string_list
         config_param :@type, :string, default: 'memory'
@@ -60,6 +61,9 @@ module Fluent
 
       config_section :secondary, param_name: :secondary_config, required: false, multi: false, final: true do
         config_param :@type, :string, default: nil
+        config_section :buffer, required: false, multi: false do
+          # dummy to detect invalid specification for here
+        end
       end
 
       def process(tag, es)
@@ -85,8 +89,100 @@ module Fluent
         true
       end
 
-      def configure(conf)
+      def prefer_delayed_commit
+        # override this method to decide which is used of `write` or `try_write` if both are implemented
+        true
+      end
+
+      def initialize
         super
+        @buffering = false
+      end
+
+      def configure(conf)
+        unless implement?(:synchronous) || implement?(:buffered) || implement?(:delayed_commit)
+          raise "BUG: output plugin must implement some methods. see developer documents."
+        end
+
+        has_buffer_section = (conf.elements.select{|e| e.name == 'buffer' }.size > 0)
+
+        super
+
+        if has_buffer_section
+          unless implement?(:buffered) || implement?(:delayed_commit)
+            raise Fluent::ConfigError, "<buffer> section is configured, but plugin '#{self.class}' doesn't support buffering"
+          end
+          @buffering = true
+        else # no buffer sections
+          if implement?(:synchronous)
+            if !implement?(:buffered) && !implement(:delayed_commit)
+              @buffering = false
+            else
+              @buffering = prefer_buffered_processing
+            end
+          else # buffered or delayed_commit is supported by `unless` of first line in this method
+            @buffering = true
+          end
+        end
+
+        if @buffering
+          # TODO: configure buffering parameters and buffer plugin
+
+          m = method(:emit_buffered)
+          (class << self; self; end).module_eval do
+            define_method(:emit, m)
+          end
+        else
+          m = method(:emit_sync)
+          (class << self; self; end).module_eval do
+            define_method(:emit, m)
+          end
+        end
+
+        if @secondary_config
+          raise Fluent::ConfigError, "Invalid <secondary> section for non-buffered plugin" unless @buffering
+          raise Fluent::ConfigError, "<secondary> section cannot have <buffer> section" if @secondary_config.buffer
+          ### TODO: init/configure secondary plugin
+        end
+
+        self
+      end
+
+      def start
+        super
+        # start @buffer
+        # start threads if @buffering
+      end
+
+      def stop
+        super
+        # stop @buffer
+      end
+
+      def shutdown
+        super
+        # shutdown @buffer
+      end
+
+      def close
+        super
+        # close @buffer
+      end
+
+      def terminate
+        super
+        # terminate @buffer
+      end
+
+      def implement?(feature)
+        methods_of_plugin = self.class.instance_methods(false)
+        case feature
+        when :synchronous    then methods_of_plugin.include?(:process)
+        when :buffered       then methods_of_plugin.include?(:format) && methods_of_plugin.include?(:write)
+        when :delayed_commit then methods_of_plugin.include?(:format) && methods_of_plugin.include?(:try_write)
+        else
+          raise ArgumentError, "Unknown feature for output plugin: #{feature}"
+        end
       end
 
       def emit_sync(tag, es)
@@ -104,7 +200,11 @@ module Fluent
       end
 
       def emit(tag, es)
-        if self.class.instance_methods.include?(:process)
+        # actually this method will be overwritten by #configure
+        if @buffering
+          emit_buffered(tag, es)
+        else
+          emit_sync(tag, es)
         end
       end
 
