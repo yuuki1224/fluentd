@@ -53,7 +53,6 @@ module Fluent
       end
 
       def start
-        @log.reset
         @state.start = true
         self
       end
@@ -80,7 +79,6 @@ module Fluent
 
       def terminate
         @state.terminate = true
-        @log.reset
         self
       end
 
