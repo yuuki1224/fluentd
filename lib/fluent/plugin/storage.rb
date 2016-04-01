@@ -14,16 +14,14 @@
 #    limitations under the License.
 #
 
-require 'fluent/plugin'
-require 'fluent/configurable'
+require 'fluent/plugin/feature'
 
 module Fluent
   module Plugin
-    class Storage
-      include Fluent::Configurable
-      include Fluent::SystemConfig::Mixin
-
+    class Storage < Feature
       DEFAULT_TYPE = 'local'
+
+      configured_in :storage
 
       config_param :persistent,        :bool, default: false # load/save with all operations
       config_param :autosave,          :bool, default: true
@@ -36,30 +34,6 @@ module Fluent
       end
 
       attr_accessor :log
-
-      def configure(conf)
-        super(conf)
-
-        @_owner = nil
-      end
-
-      def plugin_id(id, configured)
-        @_plugin_id = id
-        @_plugin_id_configured = configured
-      end
-
-      def owner=(plugin)
-        @_owner = plugin
-
-        @_plugin_id = plugin.plugin_id
-        @_plugin_id_configured = plugin.plugin_id_configured?
-
-        @log = plugin.log
-      end
-
-      def owner
-        @_owner
-      end
 
       def persistent_always?
         false

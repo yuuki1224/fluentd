@@ -14,17 +14,13 @@
 #    limitations under the License.
 #
 
-require 'fluent/plugin'
-require 'fluent/configurable'
-
+require 'fluent/plugin/feature'
 require 'monitor'
 
 module Fluent
   module Plugin
-    class Buffer
-      include Configurable
-      include SystemConfig::Mixin
-      include MonitorMixin
+    class Buffer < Feature
+      include Fluent::MonitorMixin
 
       class BufferError < StandardError; end
       class BufferOverflowError < BufferError; end
@@ -70,30 +66,12 @@ module Fluent
         false
       end
 
-      def owner=(plugin)
-        @_owner = plugin
-
-        @_plugin_id = plugin.plugin_id
-        @_plugin_id_configured = plugin.plugin_id_configured?
-
-        @log = plugin.log
-      end
-
       def configure(conf)
         super
 
         if @queue_length_limit && @total_bytes_limit > @chunk_bytes_limit * @queue_length_limit
           @total_bytes_limit = @chunk_bytes_limit * @queue_length_limit
         end
-      end
-
-      def plugin_id(id, configured)
-        @_plugin_id = id
-        @_plugin_id_configured = configured
-      end
-
-      def owner
-        @_owner
       end
 
       def start

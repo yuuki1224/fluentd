@@ -51,6 +51,14 @@ module Fluent
       proxy = self.class.merged_configure_proxy
       conf.corresponding_proxies << proxy
 
+      if self.respond_to?(:owner)
+        owner_proxy = owner.class.merged_configure_proxy
+        if proxy.configured_in_section
+          owner_proxy = owner_proxy.sections[proxy.configured_in_section]
+        end
+        proxy.overwrite_defaults(owner_proxy) if owner_proxy
+      end
+
       # In the nested section, can't get plugin class through proxies so get plugin class here
       plugin_class = Fluent::Plugin.lookup_type_from_class(proxy.name.to_s)
       root = Fluent::Config::SectionGenerator.generate(proxy, conf, logger, plugin_class)
@@ -95,6 +103,10 @@ module Fluent
           map[mod_name] = proxy
         end
         map[mod_name]
+      end
+
+      def configured_in(section_name)
+        configure_proxy(self.name).configured_in(section_name)
       end
 
       def config_param(name, *args, &block)

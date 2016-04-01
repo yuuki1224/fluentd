@@ -25,9 +25,12 @@ module Fluent
     # plugins for fluentd plugins: fluent/plugin/type/NAME.rb
     #   ex: storage, buffer chunk, ...
 
+    # first class plugins (instantiated by Engine)
     INPUT_REGISTRY     = Registry.new(:input,     'fluent/plugin/in_')
     OUTPUT_REGISTRY    = Registry.new(:output,    'fluent/plugin/out_')
     FILTER_REGISTRY    = Registry.new(:filter,    'fluent/plugin/filter_')
+
+    # feature plugin: second class plugins (instanciated by Plugins or Helpers)
     BUFFER_REGISTRY    = Registry.new(:buffer,    'fluent/plugin/buf_')
     PARSER_REGISTRY    = Registry.new(:parser,    'fluent/plugin/parser_')
     FORMATTER_REGISTRY = Registry.new(:formatter, 'fluent/plugin/formatter_')
