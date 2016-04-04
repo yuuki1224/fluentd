@@ -16,6 +16,10 @@
 
 require 'fluent/plugin/base'
 require 'fluent/plugin_helper/thread'
+require 'fluent/timezone'
+
+require 'time'
+require 'monitor'
 
 module Fluent
   module Plugin
@@ -24,9 +28,14 @@ module Fluent
 
       # `<buffer>` and `<secondary>` sections are available only when '#format' and '#write' are implemented
       # TODO: add `init: true` after merge of #877
-      config_section :buffer, param_name: :buf_config, required: false, multi: false, final: true do
+      config_section :buffer, param_name: :buffer_config, required: false, multi: false, final: true do
         config_argument(:chunk_keys, default: nil){ v.start_with?("[") ? JSON.load(v) : v.to_s.strip.split(/\s*,\s*/) } # TODO: use string_list
         config_param :@type, :string, default: 'memory'
+
+        config_param :timekey_range, :time, default: nil # range size to be used: `time.to_i / @timekey_range`
+        config_param :timekey_use_utc, :bool, default: false # default is localtime
+        config_param :timekey_zone, :string, default: Time.now.strftime('%z') # '+0900'
+        config_param :timekey_wait, :time, default: 600
 
         desc 'If true, plugin will try to flush buffer just before shutdown.'
         config_param :flush_at_shutdown, :bool, default: nil # change default by buffer_plugin.persistent?
@@ -97,6 +106,7 @@ module Fluent
       def initialize
         super
         @buffering = false
+        @delayed_commit = false
       end
 
       def configure(conf)
@@ -115,7 +125,7 @@ module Fluent
           @buffering = true
         else # no buffer sections
           if implement?(:synchronous)
-            if !implement?(:buffered) && !implement(:delayed_commit)
+            if !implement?(:buffered) && !implement?(:delayed_commit)
               @buffering = false
             else
               @buffering = prefer_buffered_processing
@@ -126,7 +136,22 @@ module Fluent
         end
 
         if @buffering
-          # TODO: configure buffering parameters and buffer plugin
+          if @buffer_config.chunk_keys.include?('time')
+            raise Fluent::ConfigError, "<buffer ...> argument includes 'time', but timekey_range is not configured" unless @buffer_config.timekey_range
+            Fluent::Timezone.validate!(@buffer_config.timekey_zone)
+            @buffer_config.timekey_zone = '+0000' if @buffer_config.timekey_use_utc
+          end
+
+          buffer_type = @buffer_config[:@type]
+          buffer_conf = conf.elements.select{|e| e.name == 'buffer' }.first || Fluent::Config::Element.new('buffer', '', {}, [])
+          @buffer = Plugin.new_buffer(buffer_type, self)
+          @buffer.configure(buffer_conf)
+
+          @delayed_commit = if implement?(:buffered) && implement?(:delayed_commit)
+                              prefer_delayed_commit
+                            else
+                              implement?(:delayed_commit)
+                            end
 
           m = method(:emit_buffered)
           (class << self; self; end).module_eval do
@@ -142,7 +167,15 @@ module Fluent
         if @secondary_config
           raise Fluent::ConfigError, "Invalid <secondary> section for non-buffered plugin" unless @buffering
           raise Fluent::ConfigError, "<secondary> section cannot have <buffer> section" if @secondary_config.buffer
-          ### TODO: init/configure secondary plugin
+
+          secondary_type = @secondary_config[:@type]
+          secondary_conf = conf.elements.select{|e| e.name == 'secondary' }.first
+          @secondary = Plugin.new_output(secondary_type)
+          @secondary.configure(secondary_conf)
+          @secondary.router = router if @secondary.has_router?
+          if self.class != @secondary.class
+            log.warn "secondary type should be same with primary one", primary: self.class.to_s, secondary: @secondary.class.to_s
+          end
         end
 
         self
@@ -150,8 +183,18 @@ module Fluent
 
       def start
         super
+        # TODO: well organized counters
+        @counters_monitor = Monitor.new
+        @num_errors = 0
+        @emit_count = 0
+        @emit_records = 0
+
+        if @buffering
+        end
         # start @buffer
         # start threads if @buffering
+        #   * flush threads
+        #   * enqueue thread with timekey_wait
       end
 
       def stop
@@ -185,20 +228,6 @@ module Fluent
         end
       end
 
-      def emit_sync(tag, es)
-        process(tag, es)
-      end
-
-      def emit_buffered(tag, es)
-        # TODO: create hash of metadata => [formatted_lines]
-
-        meta = metadata(tag)
-        @emit_count += 1
-        data = format_stream(tag, es)
-        @buffer.emit(meta, data)
-        [meta]
-      end
-
       def emit(tag, es)
         # actually this method will be overwritten by #configure
         if @buffering
@@ -207,6 +236,94 @@ module Fluent
           emit_sync(tag, es)
         end
       end
+
+      def emit_sync(tag, es)
+        @counters_monitor.synchronize{ @emit_count += 1 }
+        begin
+          process(tag, es)
+          # TODO: countup emit_records
+        rescue
+          @counters_monitor.synchronize{ @num_errors += 1 }
+          raise
+        end
+      end
+
+      def emit_buffered(tag, es)
+        @counters_monitor.synchronize{ @emit_count += 1 }
+        begin
+          metalist = handle_stream(tag, es)
+          if @buffer_config.flush_immediately
+            matalist.each do |meta|
+              @buffer.enqueue_chunk(meta)
+            end
+          end
+          if !@retry && metalist.any?{|m| @buffer.enqueued?(m) }
+            submit_flush
+          end
+        rescue
+          @counters_monitor.synchronize{ @num_errors += 1 }
+          raise
+        end
+      end
+
+      # TODO: optimize this code
+      def metadata(tag, time, record)
+        # def metadata(timekey: nil, tag: nil, key_value_pairs: {})
+        if @chunk_keys.empty?
+          @buffer.metadata()
+        elsif @chunk_keys.size == 2 && @chunk_keys.include?('time') && @chunk_keys.include?('tag')
+          time_int = time.to_i
+          timekey = time_int - (time_int % @timekey_range)
+          @buffer.metadata(timekey: timekey, tag: tag)
+        elsif @chunk_keys.size == 1 && @chunk_keys.include?('time')
+          time_int = time.to_i
+          timekey = time_int - (time_int % @timekey_range)
+          @buffer.metadata(timekey: timekey)
+        elsif @chunk_keys.size == 1 && @chunk_keys.include?('tag')
+          @buffer.metadata(tag: tag)
+        else
+          timekey = if @chunk_keys.include?('time')
+                      time_int = time.to_i
+                      time_int - (time_int % @timekey_range)
+                    else
+                      nil
+                    end
+          keys = @chunk_keys.reject{|k| k == 'time' || k == 'tag' }
+          pairs = Hash[keys.map{|k| [k, record[k]]}]
+          @buffer.metadata(timekey: timekey, tag: (@chunk_keys.include?('tag') ? tag : nil), key_value_pairs: pairs)
+        end
+      end
+
+      def handle_stream(tag, es)
+        meta_and_data = {}
+        es.each do |time, record|
+          meta = metadata(tag, time, record)
+          meta_and_data[meta] ||= []
+          meta_and_data[meta] << format(tag, time, record)
+        end
+        meta_and_data.each_pair do |meta, data|
+          @buffer.emit(meta, data)
+        end
+        meta_and_data.keys
+      end
+
+      def submit_flush
+        # TODO: awake helper threads?
+
+        # Without locks: it is rough but enough to select "next" writer selection
+        @writer_current_position = (@writer_current_position + 1) % @writers_size
+        @writers[@writer_current_position].submit_flush
+      end
+
+      # submit_flush
+      # commit_write
+      # try_rollback_write
+      # enqueue_buffer
+      # force_flush
+      # next_flush_time
+      # try_flush
+
+      # RetryStateMachine
 
       def flush_thread_run
         # If the given clock_id is not supported, Errno::EINVAL is raised.

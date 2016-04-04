@@ -29,6 +29,10 @@ module Fluent
         @router
       end
 
+      def router=(r)
+        @router = r
+      end
+
       def has_router?
         true
       end

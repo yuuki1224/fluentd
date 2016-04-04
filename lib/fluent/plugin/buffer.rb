@@ -31,6 +31,8 @@ module Fluent
       DEFAULT_CHUNK_BYTES_LIMIT =   8 * 1024 * 1024 # 8MB
       DEFAULT_TOTAL_BYTES_LIMIT = 512 * 1024 * 1024 # 512MB, same with v0.12 (BufferedOutput + buf_memory: 64 x 8MB)
 
+      configured_in :buffer
+
       # TODO: system total buffer bytes limit by SystemConfig
 
       config_param :chunk_bytes_limit, :size, default: DEFAULT_CHUNK_BYTES_LIMIT
@@ -169,7 +171,7 @@ module Fluent
 
       # metadata MUST have consistent object_id for each variation
       # data MUST be Array of serialized events
-      def emit(metadata, data force: false)
+      def emit(metadata, data, force: false)
         data_size = data.size
         return if data_size < 1
         raise BufferOverflowError unless storable?
