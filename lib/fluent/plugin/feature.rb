@@ -26,11 +26,11 @@ module Fluent
 
       attr_accessor :log
 
-      State = Struct.new(:configure, :start, :stop, :before_shutdown, :shutdown, :close, :terminate)
+      State = Struct.new(:configure, :start, :stop, :before_shutdown, :shutdown, :after_shutdown, :close, :terminate)
 
       def initialize
         super
-        @state = State.new(false, false, false, false, false, false, false)
+        @state = State.new(false, false, false, false, false, false, false, false)
       end
 
       def owner=(plugin)
@@ -72,6 +72,11 @@ module Fluent
         self
       end
 
+      def after_shutdown
+        @state.after_shutdown = true
+        self
+      end
+
       def close
         @state.close = true
         self
@@ -100,6 +105,10 @@ module Fluent
 
       def shutdown?
         @state.shutdown
+      end
+
+      def after_shutdown?
+        @state.after_shutdown
       end
 
       def closed?
