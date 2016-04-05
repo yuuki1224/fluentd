@@ -19,6 +19,8 @@ require 'fluent/plugin_helper/thread'
 require 'fluent/plugin_helper/event_loop'
 require 'fluent/plugin_helper/timer'
 require 'fluent/plugin_helper/child_process'
+require 'fluent/plugin_helper/storage'
+require 'fluent/plugin_helper/retry_state'
 
 module Fluent
   module PluginHelper
