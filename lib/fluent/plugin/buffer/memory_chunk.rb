@@ -41,6 +41,7 @@ module Fluent
           @chunk_bytes += @adding_bytes
 
           @adding_bytes = @adding_records = 0
+          @modified_at = Time.now
           true
         end
 

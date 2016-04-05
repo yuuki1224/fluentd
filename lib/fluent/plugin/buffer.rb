@@ -94,15 +94,8 @@ module Fluent
         @metadata_list = [] # keys of @stage
       end
 
-      def stop
-        # ...
-      end
-
-      def shutdown
-        # ...
-      end
-
       def close
+        super
         synchronize do
           @dequeued.each_pair do |chunk_id, chunk|
             chunk.close
@@ -117,6 +110,7 @@ module Fluent
       end
 
       def terminate
+        super
         @stage = @queue = nil
       end
 
@@ -144,10 +138,11 @@ module Fluent
         end
       end
 
-      def new_metadata(timekey: nil, tag: nil, variables: [])
+      def new_metadata(timekey: nil, tag: nil, variables: nil)
         Metadata.new(timekey, tag, variables)
       end
 
+      # TODO: metadata_list cleaner
       def add_metadata(metadata)
         synchronize do
           if i = @metadata_list.index(metadata)
@@ -158,13 +153,8 @@ module Fluent
         end
       end
 
-      def metadata(timekey: nil, tag: nil, key_value_pairs: {})
-        meta = if key_value_pairs.empty?
-                 new_metadata(timekey: timekey, tag: tag, variables: [])
-               else
-                 variables = key_value_pairs.keys.sort.map{|k| key_value_pairs[k] }
-                 new_meatadata(timekey: timekey, tag: tag, variables: variables)
-               end
+      def metadata(timekey: nil, tag: nil, variables: nil)
+        meta = new_meatadata(timekey: timekey, tag: tag, variables: variables)
         add_metadata(meta)
         meta
       end
@@ -197,21 +187,18 @@ module Fluent
         emit_step_by_step(metadata, data)
       end
 
-      # def staged_chunk_test(metadata) # block
-      #   synchronize do
-      #     chunk = @stage[metadata]
-      #     yield chunk
-      #   end
-      # end
-      # def queued_records
-      #   synchronize { @queue.reduce(0){|r, chunk| r + chunk.records } }
-      # end
+      def queued_records
+        synchronize { @queue.reduce(0){|r, chunk| r + chunk.records } }
+      end
 
       def queued?(metadata=nil)
         synchronize do
-          return !@queue.empty? unless metadata
-          n = @queued_num[metadata]
-          n && n.nonzero?
+          if metadata
+            n = @queued_num[metadata]
+            n && n.nonzero?
+          else
+            !@queue.empty?
+          end
         end
       end
 
@@ -235,8 +222,16 @@ module Fluent
 
       def enqueue_all
         synchronize do
-          @stage.keys.each do |metadata|
-            enqueue_chunk(metadata)
+          if block_given?
+            @stage.keys.each do |metadata|
+              chunk = @stage[metadata]
+              v = yield metadata, chunk
+              enqueue_chunk(metadata) if v
+            end
+          else
+            @stage.keys.each do |metadata|
+              enqueue_chunk(metadata)
+            end
           end
         end
       end
