@@ -30,9 +30,8 @@ module Fluent
       CHUNK_KEY_PLACEHOLDER_PATTERN = /\$\{[-_.@a-zA-Z0-9]+\}/
 
       # `<buffer>` and `<secondary>` sections are available only when '#format' and '#write' are implemented
-      # TODO: add `init: true` after merge of #877
-      config_section :buffer, param_name: :buffer_config, required: false, multi: false, final: true do
-        config_argument(:chunk_keys, default: nil){ v.start_with?("[") ? JSON.load(v) : v.to_s.strip.split(/\s*,\s*/) } # TODO: use string_list
+      config_section :buffer, param_name: :buffer_config, init: true, required: false, multi: false, final: true do
+        config_argument :chunk_keys, :array, value_type: :string, default: []
         config_param :@type, :string, default: 'memory'
 
         config_param :timekey_range, :time, default: nil # range size to be used: `time.to_i / @timekey_range`
