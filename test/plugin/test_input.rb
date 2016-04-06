@@ -2,13 +2,15 @@ require_relative '../helper'
 require 'fluent/plugin/input'
 require 'flexmock/test_unit'
 
-class DummyPlugin < Fluent::Plugin::Input
+module FluentPluginInputTest
+  class DummyPlugin < Fluent::Plugin::Input
+  end
 end
 
 class InputTest < Test::Unit::TestCase
   setup do
     Fluent::Test.setup
-    @p = DummyPlugin.new
+    @p = FluentPluginInputTest::DummyPlugin.new
   end
 
   test 'has plugin_id automatically generated' do
@@ -43,7 +45,7 @@ class InputTest < Test::Unit::TestCase
 
   test 'can load plugin helpers' do
     assert_nothing_raised do
-      class DummyPlugin2 < Fluent::Plugin::Input
+      class FluentPluginInputTest::DummyPlugin2 < Fluent::Plugin::Input
         helpers :storage
       end
     end

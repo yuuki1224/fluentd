@@ -1,12 +1,14 @@
 require_relative '../helper'
 require 'fluent/plugin/base'
 
-class DummyPlugin < Fluent::Plugin::Base
+module FluentPluginBaseTest
+  class DummyPlugin < Fluent::Plugin::Base
+  end
 end
 
 class BaseTest < Test::Unit::TestCase
   setup do
-    @p = DummyPlugin.new
+    @p = FluentPluginBaseTest::DummyPlugin.new
   end
 
   test 'has methods for phases of plugin life cycle, and methods to know "super"s were correctly called or not' do
@@ -56,14 +58,14 @@ class BaseTest < Test::Unit::TestCase
 
   test 'is configurable by config_param and config_section' do
     assert_nothing_raised do
-      class DummyPlugin2 < Fluent::Plugin::TestBase
+      class FluentPluginBaseTest::DummyPlugin2 < Fluent::Plugin::TestBase
         config_param :myparam1, :string
         config_section :mysection, multi: false do
           config_param :myparam2, :integer
         end
       end
     end
-    p2 = DummyPlugin2.new
+    p2 = FluentPluginBaseTest::DummyPlugin2.new
     assert_nothing_raised do
       p2.configure(config_element('ROOT', '', {'myparam1' => 'myvalue1'}, [config_element('mysection', '', {'myparam2' => 99})]))
     end

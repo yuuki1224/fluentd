@@ -3,12 +3,14 @@ require 'fluent/plugin/base'
 require 'fluent/plugin/input'
 require 'fluent/plugin/owned_by_mixin'
 
-class DummyParent < Fluent::Plugin::Input
-  Fluent::Plugin.register_input('dummy_parent', self)
-end
-class DummyChild < Fluent::Plugin::Base
-  include Fluent::Plugin::OwnedByMixin
-  Fluent::Plugin.register_parser('dummy_child', self)
+module OwnedByMixinTestEnv
+  class DummyParent < Fluent::Plugin::Input
+    Fluent::Plugin.register_input('dummy_parent', self)
+  end
+  class DummyChild < Fluent::Plugin::Base
+    include Fluent::Plugin::OwnedByMixin
+    Fluent::Plugin.register_parser('dummy_child', self)
+  end
 end
 
 class OwnedByMixinTest < Test::Unit::TestCase
