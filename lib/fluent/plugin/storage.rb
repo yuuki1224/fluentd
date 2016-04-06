@@ -14,11 +14,14 @@
 #    limitations under the License.
 #
 
-require 'fluent/plugin/feature'
+require 'fluent/plugin/base'
+require 'fluent/plguin/owned_by_mixin'
 
 module Fluent
   module Plugin
-    class Storage < Feature
+    class Storage < Base
+      include OwnedByMixin
+
       DEFAULT_TYPE = 'local'
 
       configured_in :storage

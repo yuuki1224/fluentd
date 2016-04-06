@@ -15,11 +15,14 @@
 #
 
 require 'fluent/plugin/feature'
+require 'fluent/plguin/owned_by_mixin'
+
 require 'monitor'
 
 module Fluent
   module Plugin
-    class Buffer < Feature
+    class Buffer < Base
+      include OwnedByMixin
       include Fluent::MonitorMixin
 
       class BufferError < StandardError; end

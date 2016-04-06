@@ -16,19 +16,13 @@
 
 require 'fluent/plugin'
 require 'fluent/configurable'
-require 'fluent/plugin_id'
-require 'fluent/log'
-require 'fluent/plugin_helper'
 require 'fluent/system_config'
 
 module Fluent
   module Plugin
     class Base
       include Configurable
-      include PluginId
       include SystemConfig::Mixin
-      include PluginLoggerMixin
-      include PluginHelper::Mixin
 
       State = Struct.new(:configure, :start, :stop, :before_shutdown, :shutdown, :after_shutdown, :close, :terminate)
 
@@ -48,7 +42,6 @@ module Fluent
       end
 
       def start
-        @log.reset
         @state.start = true
         self
       end
@@ -80,7 +73,6 @@ module Fluent
 
       def terminate
         @state.terminate = true
-        @log.reset
         self
       end
 

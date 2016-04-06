@@ -15,7 +15,9 @@
 #
 
 require 'fluent/plugin/base'
-require 'fluent/plugin_helper/thread'
+require 'fluent/log'
+require 'fluent/plugin_id'
+require 'fluent/plugin_helper'
 require 'fluent/timezone'
 
 require 'time'
@@ -24,6 +26,10 @@ require 'monitor'
 module Fluent
   module Plugin
     class Output < Base
+      include PluginId
+      include PluginLoggerMixin
+      include PluginHelper::Mixin
+
       helpers :thread, :retry_state
 
       CHUNK_KEY_PATTERN = /^[-_.@a-zA-Z0-9]+$/

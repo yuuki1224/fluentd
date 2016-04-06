@@ -14,20 +14,25 @@
 #    limitations under the License.
 #
 
-require 'fluent/plugin/base'
-
-require 'fluent/log'
-require 'fluent/plugin_id'
-require 'fluent/plugin_helper'
-
 module Fluent
   module Plugin
-    class Input < Base
-      include PluginId
-      include PluginLoggerMixin
-      include PluginHelper::Mixin
+    module OwnedByMixin
+      def owner=(plugin)
+        @_owner = plugin
 
-      helpers :event_emitter
+        @_plugin_id = plugin.plugin_id
+        @_plugin_id_configured = plugin.plugin_id_configured?
+
+        @log = plugin.log
+      end
+
+      def owner
+        @_owner
+      end
+
+      def log
+        @log
+      end
     end
   end
 end
