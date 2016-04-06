@@ -50,6 +50,8 @@ require 'fluent/plugin_helper'
 module Fluent
   module Plugin
     class TestBase < Base
+      # a base plugin class, but not input nor output
+      # mainly for helpers and owned plugins
       include PluginId
       include PluginLoggerMixin
       include PluginHelper::Mixin
