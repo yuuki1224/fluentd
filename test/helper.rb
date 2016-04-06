@@ -42,6 +42,20 @@ require 'fileutils'
 require 'fluent/config/element'
 require 'fluent/log'
 require 'fluent/test'
+require 'fluent/plugin/base'
+require 'fluent/log'
+require 'fluent/plugin_id'
+require 'fluent/plugin_helper'
+
+module Fluent
+  module Plugin
+    class TestBase < Base
+      include PluginId
+      include PluginLoggerMixin
+      include PluginHelper::Mixin
+    end
+  end
+end
 
 unless defined?(Test::Unit::AssertionFailedError)
   class Test::Unit::AssertionFailedError < StandardError

@@ -58,9 +58,19 @@ module Fluent
         end
       end
 
-      def shutdown
-        super
+      def after_shutdown
         @router = nil
+        super
+      end
+
+      def close # unset router many times to reduce test cost
+        @router = nil
+        super
+      end
+
+      def terminate
+        @router = nil
+        super
       end
     end
   end

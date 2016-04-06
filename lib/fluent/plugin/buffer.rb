@@ -15,7 +15,7 @@
 #
 
 require 'fluent/plugin/feature'
-require 'fluent/plguin/owned_by_mixin'
+require 'fluent/plugin/owned_by_mixin'
 
 require 'monitor'
 

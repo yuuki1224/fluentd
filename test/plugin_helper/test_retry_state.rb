@@ -13,7 +13,7 @@ class Fluent::PluginHelper::RetryState::RetryStateMachine
 end
 
 class RetryStateHelperTest < Test::Unit::TestCase
-  class Dummy < Fluent::Plugin::Base
+  class Dummy < Fluent::Plugin::TestBase
     helpers :retry_state
   end
 

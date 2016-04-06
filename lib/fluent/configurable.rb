@@ -51,7 +51,7 @@ module Fluent
       proxy = self.class.merged_configure_proxy
       conf.corresponding_proxies << proxy
 
-      if self.respond_to?(:owner)
+      if self.respond_to?(:owner) && self.owner
         owner_proxy = owner.class.merged_configure_proxy
         if proxy.configured_in_section
           owner_proxy = owner_proxy.sections[proxy.configured_in_section]

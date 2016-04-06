@@ -15,7 +15,7 @@
 #
 
 require 'fluent/plugin/base'
-require 'fluent/plguin/owned_by_mixin'
+require 'fluent/plugin/owned_by_mixin'
 
 module Fluent
   module Plugin
@@ -78,14 +78,6 @@ module Fluent
 
       def update(key, &block) # transactional get-and-update
         raise NotImplementedError, "Implement this method in child class"
-      end
-
-      # storage plugins has only 'close' and 'terminate'
-      # stop: used in helper to stop autosave
-      # shutdown: used in helper to call #save finally if needed
-      def close; end
-      def terminate
-        @_owner = nil
       end
     end
   end

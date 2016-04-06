@@ -122,7 +122,6 @@ module Fluent
       else
         new_impl('parser', PARSER_REGISTRY, type, parent)
       end
-      impl
     end
 
     def self.new_formatter(type, parent: nil)
@@ -142,7 +141,7 @@ module Fluent
       nil
     end
 
-    def self.new_impl(kind, registry, type, parent)
+    def self.new_impl(kind, registry, type, parent=nil)
       # "'type' not found" is handled by registry
       obj = registry.lookup(type)
       impl = case

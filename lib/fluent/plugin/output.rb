@@ -168,7 +168,7 @@ module Fluent
 
           buffer_type = @buffer_config[:@type]
           buffer_conf = conf.elements.select{|e| e.name == 'buffer' }.first || Fluent::Config::Element.new('buffer', '', {}, [])
-          @buffer = Plugin.new_buffer(buffer_type, self)
+          @buffer = Plugin.new_buffer(buffer_type, parent: self)
           @buffer.configure(buffer_conf)
 
           @delayed_commit = if implement?(:buffered) && implement?(:delayed_commit)
