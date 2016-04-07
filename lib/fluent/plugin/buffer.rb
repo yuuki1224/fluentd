@@ -14,7 +14,7 @@
 #    limitations under the License.
 #
 
-require 'fluent/plugin/feature'
+require 'fluent/plugin/base'
 require 'fluent/plugin/owned_by_mixin'
 
 require 'monitor'
@@ -23,7 +23,7 @@ module Fluent
   module Plugin
     class Buffer < Base
       include OwnedByMixin
-      include Fluent::MonitorMixin
+      include MonitorMixin
 
       class BufferError < StandardError; end
       class BufferOverflowError < BufferError; end
