@@ -69,7 +69,7 @@ module Fluent
 
         def purge
           @chunk = ''.force_encoding("ASCII-8BIT")
-          @chunk_bytes = @adding_bytes = @adding_records = 0
+          @chunk_bytes = @records = @adding_bytes = @adding_records = 0
           true
         end
 
