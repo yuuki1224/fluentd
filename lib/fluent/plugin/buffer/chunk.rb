@@ -63,6 +63,10 @@ module Fluent
           [u1 >> 32, u1 & 0xffffffff, rand(0xffffffff), rand(0xffffffff)].pack('NNNN')
         end
 
+        def self.unique_id_hex(unique_id)
+          unique_id.unpack('N*').map{|n| n.to_s(16) }.join
+        end
+
         # data is array of formatted record string
         def append(data)
           raise NotImplementedError, "Implement this method in child class"
