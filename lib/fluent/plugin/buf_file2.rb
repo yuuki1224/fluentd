@@ -15,7 +15,6 @@
 #
 
 require 'fileutils'
-require 'uri'
 
 require 'fluent/buffer'
 require 'fluent/env'
@@ -47,7 +46,6 @@ module Fluent
 
       def initialize
         super
-        @uri_parser = URI::Parser.new
         @symlink_path = nil
         @dir_permission = system_config.dir_permission || DIR_PERMISSION
       end

@@ -152,6 +152,7 @@ module Fluent
             @metadata_list[i]
           else
             @metadata_list << metadata
+            metadata
           end
         end
       end
@@ -159,7 +160,6 @@ module Fluent
       def metadata(timekey: nil, tag: nil, variables: nil)
         meta = new_meatadata(timekey: timekey, tag: tag, variables: variables)
         add_metadata(meta)
-        meta
       end
 
       # metadata MUST have consistent object_id for each variation
@@ -179,9 +179,12 @@ module Fluent
             if !size_over?(chunk) || force
               chunk.commit
               stored = true
+            else
+              chunk.rollback
             end
-          ensure
+          rescue
             chunk.rollback
+            raise
           end
         end
         return if stored

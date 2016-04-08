@@ -115,7 +115,6 @@ module Fluent
         end
 
         def msgpack_each(&block)
-          require 'fluent/engine'
           open do |io|
             u = msgpack_factory.unpacker(io)
             begin

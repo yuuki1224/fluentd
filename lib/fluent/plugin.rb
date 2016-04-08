@@ -152,7 +152,7 @@ module Fluent
              else
                raise Fluent::ConfigError, "#{kind} plugin '#{type}' is not a Class nor callable (without arguments)."
              end
-      if parent && impl.respond_to?(:"owner=")
+      if parent && impl.respond_to?("owner=")
         impl.owner = parent
       end
       impl

@@ -54,17 +54,17 @@ module Fluent
 
         config_param :flush_threads, :integer, default: 1, desc: 'The number of threads to flush the buffer.'
 
-        config_param :flush_tread_interval, :float, default: 1.0, desc: 'Seconds to sleep between checks for buffer flushes in flush threads.'
+        config_param :flush_thread_interval, :float, default: 1.0, desc: 'Seconds to sleep between checks for buffer flushes in flush threads.'
         config_param :flush_burst_interval, :float, default: 1.0, desc: 'Seconds to sleep between flushes when many buffer chunks are queued.'
 
         config_param :delayed_commit_timeout, :time, default: 60, desc: 'Seconds of timeout for buffer chunks to be committed by plugins later.'
 
-        config_param :retry_forever, :bool, default: false, desc: 'If true, plugin will ignore retry_limit_* options and retry flushing forever.'
+        config_param :retry_forever, :bool, default: false, desc: 'If true, plugin will ignore retry_timeout and retry_max_times options and retry flushing forever.'
         config_param :retry_timeout, :time, default: 72 * 60 * 60, desc: 'The maximum seconds to retry to flush while failing, until plugin discards buffer chunks.'
         # 72hours == 17 times with exponential backoff (not to change default behavior)
         config_param :retry_max_times, :integer, default: nil, desc: 'The maximum number of times to retry to flush while failing.'
 
-        config_param :retry_secondary_threshold, :integer, default: 80, desc: 'Percentage of retry_limit_* to switch to use secondary while failing.'
+        config_param :retry_secondary_threshold, :integer, default: 80, desc: 'Percentage of retry_timeout to switch to use secondary while failing.'
         # expornential backoff sequence will be initialized at the time of this threshold
 
         desc 'How to wait next retry to flush buffer.'
