@@ -204,22 +204,22 @@ module Fluent
       def enqueue_chunk(metadata)
         synchronize do
           chunk = @stage.delete(metadata)
-          if chunk
-            chunk.synchronize do
-              if chunk.empty?
-                chunk.close
-              else
-                @queue << chunk
-                @queued_num[metadata] = @queued_num.fetch(metadata, 0) + 1
-                chunk.enqueued! if chunk.respond_to?(:enqueued!)
-              end
+          return nil unless chunk
+
+          chunk.synchronize do
+            if chunk.empty?
+              chunk.close
+            else
+              @queue << chunk
+              @queued_num[metadata] = @queued_num.fetch(metadata, 0) + 1
+              chunk.enqueued! if chunk.respond_to?(:enqueued!)
             end
-            size = chunk.size
-            @stage_size -= size
-            @queue_size += size
           end
-          nil
+          size = chunk.size
+          @stage_size -= size
+          @queue_size += size
         end
+        nil
       end
 
       def enqueue_all
@@ -242,7 +242,10 @@ module Fluent
         return nil if @queue.empty?
         synchronize do
           chunk = @queue.shift
-          return nil unless chunk # queue is empty
+
+          # this buffer is dequeued by other thread just before "synchronize" in this thread
+          return nil unless chunk
+
           @dequeued[chunk.unique_id] = chunk
           @queued_num[chunk.metadata] -= 1 # BUG if nil, 0 or subzero
           chunk
@@ -262,11 +265,12 @@ module Fluent
       def purge_chunk(chunk_id)
         synchronize do
           chunk = @dequeued.delete(chunk_id)
-          metadata = chunk && chunk.metadata
+          return nil unless chunk # purged by other threads
 
+          metadata = chunk.metadata
           begin
             size = chunk.size
-            chunk.purge if chunk
+            chunk.purge
             @queue_size -= size
           rescue => e
             log.error "failed to purge buffer chunk", chunk_id: chunk_id, error_class: e.class, error: e
