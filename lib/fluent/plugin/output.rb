@@ -298,7 +298,7 @@ module Fluent
       def implement?(feature)
         methods_of_plugin = self.class.instance_methods(false)
         case feature
-        when :synchronous    then methods_of_plugin.include?(:process) || support_in_v12_style??(:synchronous)
+        when :synchronous    then methods_of_plugin.include?(:process) || support_in_v12_style?(:synchronous)
         when :buffered       then methods_of_plugin.include?(:format) && methods_of_plugin.include?(:write) || support_in_v12_style?(:buffered)
         when :delayed_commit then methods_of_plugin.include?(:format) && methods_of_plugin.include?(:try_write)
         else
