@@ -171,6 +171,18 @@ module Fluent
           @buffer = Plugin.new_buffer(buffer_type, parent: self)
           @buffer.configure(buffer_conf)
 
+          if @flush_at_shutdown.nil?
+            @flush_at_shutdown = if @buffer.persistent?
+                                   false
+                                 else
+                                   true # flush_at_shutdown is true in default for on-memory buffer
+                                 end
+          elsif !@flush_at_shutdown && !@buffer.persistent?
+            buf_type = Plugin.lookup_type_from_class(@buffer.class)
+            log.warn "'flush_at_shutdown' is false, and buffer plugin '#{buf_type}' is not persistent buffer."
+            log.warn "your configuration will lose buffered data at shutdown. please confirm your configuration again."
+          end
+
           @delayed_commit = if implement?(:buffered) && implement?(:delayed_commit)
                               prefer_delayed_commit
                             else
@@ -252,18 +264,21 @@ module Fluent
 
       def before_shutdown
         super
+
+        if @flush_at_shutdown
+          force_flush
+        end
         @buffer.before_shutdown if @buffering
       end
 
       def shutdown
-        try_rollback_all if @delayed_commit # for delayed chunks
-
         super
         @buffer.shutdown if @buffering
       end
 
       def after_shutdown
         super
+        try_rollback_all if @delayed_commit # for delayed chunks
 
         if @buffering
           @buffer.after_shutdown
@@ -372,7 +387,7 @@ module Fluent
             end
           end
           if !@retry && @buffer.enqueued?
-            submit_flush
+            submit_flush_once
           end
         rescue
           # TODO: separate number of errors into emit errors and write/flush errors
@@ -542,16 +557,24 @@ module Fluent
         end
       end
 
-      def submit_flush
+      def submit_flush_once
         # Without locks: it is rough but enough to select "next" writer selection
         @output_flush_thread_current_position = (@output_flush_thread_current_position + 1) % @flush_threads
         state = @output_flush_threads[@output_flush_thread_current_position]
         state.next_time = 0
+        state.thread.run
       end
 
       def force_flush
         @buffer.enqueue_all
-        submit_flush
+        submit_flush_all
+      end
+
+      def submit_flush_all
+        while !@retry && @buffer.enqueued?
+          submit_flush_once
+          sleep @buffer_config.flush_burst_interval
+        end
       end
 
       def enqueue_thread_run
