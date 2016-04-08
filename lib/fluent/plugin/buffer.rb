@@ -74,7 +74,7 @@ module Fluent
       def configure(conf)
         super
 
-        if @queue_length_limit && @total_bytes_limit > @chunk_bytes_limit * @queue_length_limit
+        unless @queue_length_limit.nil?
           @total_bytes_limit = @chunk_bytes_limit * @queue_length_limit
         end
       end
