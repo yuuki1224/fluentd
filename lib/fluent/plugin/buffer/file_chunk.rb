@@ -57,23 +57,30 @@ module Fluent
         def append(data)
           raise "BUG: appending to non-staged chunk, now '#{@state}'" unless @state == :staged
 
-          adding = data.join.force_encoding('ASCII-8BIT')
+          bytes = 0
+          adding = ''.force_encoding(Encoding::ASCII_8BIT)
+          data.each do |d|
+            x = d.force_encoding(Encoding::ASCII_8BIT)
+            bytes += x.bytesize
+            adding << x
+          end
           @chunk.write adding
 
-          @adding_bytes += adding.bytesize
+          @adding_bytes += bytes
           @adding_records += data.size
-          write_metadata(try_update: true) # of course, this operation may fail
 
           true
         end
 
         def commit
+          write_metadata # this should be at first: of course, this operation may fail
+
           @commit_position = @chunk.pos
           @records += @adding_records
           @bytesize += @adding_bytes
-          @modified_at = Time.now
-
           @adding_bytes = @adding_records = 0
+          @modified_at = current_time
+
           true
         end
 
@@ -87,7 +94,7 @@ module Fluent
         end
 
         def size
-          @bytesize
+          @bytesize + @adding_bytes
         end
 
         def records
@@ -112,6 +119,7 @@ module Fluent
           @state = :closed
           @chunk.close
           @meta.close
+          @bytesize = @records = @adding_bytes = @adding_records = 0
           File.unlink(@path, @meta_path)
         end
 
@@ -127,6 +135,10 @@ module Fluent
           val
         end
 
+        def current_time
+          Time.now
+        end
+
         def self.assume_chunk_state(path)
           if /\.(b|q)([0-9a-f]+)\.[^\/]*\Z/n =~ path # //n switch means explicit 'ASCII-8BIT' pattern
             $1 == 'b' ? :staged : :queued
@@ -135,29 +147,29 @@ module Fluent
           end
         end
 
-        def generate_stage_chunk_path(path)
-          pos = path.index('*')
-          raise "BUG: buffer chunk path on stage MUST have '*'" unless pos
+        def self.generate_stage_chunk_path(path, unique_id)
+          pos = path.index('.*.')
+          raise "BUG: buffer chunk path on stage MUST have '.*.'" unless pos
 
           prefix = path[0...pos]
-          suffix = path[(pos+1)..-1]
+          suffix = path[(pos+3)..-1]
 
-          chunk_id = @unique_id.unpack('N*').map{|n| n.to_s(16)}.join
+          chunk_id = unique_id_hex(unique_id)
           state = 'b'
-          "#{prefix}#{state}#{chunk_id}#{suffix}"
+          "#{prefix}.#{state}#{chunk_id}.#{suffix}"
         end
 
-        def generate_queued_chunk_path(path)
-          chunk_id = @unique_id.unpack('N*').map{|n| n.to_s(16)}.join
-          if pos = path.index('b' + chunk_id)
-            path.sub('b' + chunk_id, 'q' + chunk_id)
+        def self.generate_queued_chunk_path(path, unique_id)
+          chunk_id = unique_id_hex(unique_id)
+          if pos = path.index(".b#{chunk_id}.")
+            path.sub(".b#{chunk_id}.", ".q#{chunk_id}.")
           else # for unexpected cases (ex: users rename files while opened by fluentd)
-            path + 'q' + chunk_id + '.log'
+            path + ".q#{chunk_id}.chunk"
           end
         end
 
         # used only for queued v0.12 buffer path
-        def unique_id_from_path(path)
+        def self.unique_id_from_path(path)
           if /\.(b|q)([0-9a-f]+)\.[^\/]*\Z/n =~ path # //n switch means explicit 'ASCII-8BIT' pattern
             return $2.scan(/../).map{|x| x.to_i(16) }.pack('C*')
           end
@@ -168,10 +180,12 @@ module Fluent
           # Any input errors are ignored
           data = msgpack_unpacker.unpack(bindata, symbolize_keys: true) rescue {}
 
+          now = current_time
+
           @unique_id = data[:id] || unique_id_from_path(@path) || @unique_id
           @records = data[:r] || 0
-          @created_at = Time.at(data.fetch(:c, Time.now.to_i))
-          @modified_at = Time.at(data.fetch(:m, Time.now.to_i))
+          @created_at = Time.at(data.fetch(:c, now.to_i))
+          @modified_at = Time.at(data.fetch(:m, now.to_i))
 
           @metadata.timekey = data[:timekey]
           @metadata.tag = data[:tag]
@@ -189,12 +203,12 @@ module Fluent
           @metadata.variables = nil
         end
 
-        def write_metadata(try_update: false)
+        def write_metadata(update: true)
           data = @metadata.to_h.merge({
               id: @unique_id,
-              r: (try_update ? @records + @adding_records : @records),
+              r: (update ? @records + @adding_records : @records),
               c: @created_at.to_i,
-              m: (try_update ? Time.now.to_i : @modified_at.to_i)
+              m: (update ? current_time : @modified_at).to_i,
           })
           @meta.seek(0, IO::SEEK_SET)
           @meta.truncate(0)
@@ -204,10 +218,10 @@ module Fluent
         def enqueued!
           return unless @state == :staged
 
-          new_chunk_path = generate_queued_chunk_path(@path)
+          new_chunk_path = self.class.generate_queued_chunk_path(@path, @unique_id)
           new_meta_path = new_chunk_path + '.meta'
 
-          write_metadata # re-write metadata w/ finalized records
+          write_metadata(update: false) # re-write metadata w/ finalized records
 
           file_rename(@chunk, @path, new_chunk_path, ->(size){ @size = size })
           @path = new_chunk_path
@@ -233,12 +247,14 @@ module Fluent
         end
 
         def create_new_chunk(path, perm)
-          @path = generate_stage_chunk_path(path)
+          @path = self.class.generate_stage_chunk_path(path, @unique_id)
           @meta_path = @path + '.meta'
           @chunk = File.open(@path, 'w+', perm)
+          @chunk.set_encoding(Encoding::ASCII_8BIT)
           @chunk.sync = true
           @chunk.binmode
           @meta = File.open(@meta_path, 'w', perm)
+          @meta.set_encoding(Encoding::ASCII_8BIT)
           @meta.sync = true
           @meta.binmode
 
@@ -258,11 +274,13 @@ module Fluent
           # and it should be enqueued immediately
           if File.exist?(@meta_path)
             @chunk = File.open(@path, 'r+')
+            @chunk.set_encoding(Encoding::ASCII_8BIT)
             @chunk.sync = true
             @chunk.seek(0, IO::SEEK_END)
             @chunk.binmode
 
             @meta = File.open(@meta_path, 'r+')
+            @meta.set_encoding(Encoding::ASCII_8BIT)
             @meta.sync = true
             restore_metadata(@meta.read)
             @meta.seek(0, IO::SEEK_SET)
@@ -276,6 +294,7 @@ module Fluent
           else
             # classic buffer chunk - read only chunk
             @chunk = File.open(@path, 'r')
+            @chunk.set_encoding(Encoding::ASCII_8BIT)
             @chunk.binmode
             @state = :queued
             @bytesize = @chunk.size
@@ -294,7 +313,7 @@ module Fluent
 
           @meta_path = @path + '.meta'
           if File.readable?(@meta_path)
-            restore_metadata(File.open(@meta_path){|f| f.binmode; f.read })
+            restore_metadata(File.open(@meta_path){|f| f.set_encoding(Encoding::ASCII_8BIT); f.binmode; f.read })
           else
             restore_metadata_partially(@chunk)
           end
