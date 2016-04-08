@@ -145,7 +145,6 @@ module Fluent
         Metadata.new(timekey, tag, variables)
       end
 
-      # TODO: metadata_list cleaner
       def add_metadata(metadata)
         synchronize do
           if i = @metadata_list.index(metadata)
@@ -165,20 +164,21 @@ module Fluent
       # metadata MUST have consistent object_id for each variation
       # data MUST be Array of serialized events
       def emit(metadata, data, force: false)
-        data_size = data.size
-        return if data_size < 1
+        return if data.size < 1
         raise BufferOverflowError unless storable?
 
         stored = false
 
         # the case whole data can be stored in staged chunk: almost all emits will success
         chunk = synchronize { @stage[metadata] ||= generate_chunk(metadata) }
+        original_size = chunk.size
         chunk.synchronize do
           begin
             chunk.append(data)
             if !size_over?(chunk) || force
               chunk.commit
               stored = true
+              @stage_size += (chunk.size - original_size)
             else
               chunk.rollback
             end
@@ -221,6 +221,9 @@ module Fluent
                 chunk.enqueued! if chunk.respond_to?(:enqueued!)
               end
             end
+            size = chunk.size
+            @stage_size -= size
+            @queue_size += size
           end
           nil
         end
@@ -269,7 +272,9 @@ module Fluent
           metadata = chunk && chunk.metadata
 
           begin
+            size = chunk.size
             chunk.purge if chunk
+            @queue_size -= size
           rescue => e
             @log.error "failed to purge buffer chunk", chunk_id: chunk_id, error_class: e.class, error: e
           end
@@ -283,6 +288,14 @@ module Fluent
 
       def clear!
         synchronize do
+          @stage.values.each do |chunk|
+            begin
+              chunk.purge
+            rescue => e
+              @log.error "unexpected error while clearing buffer stage", error_class: e.class, error: e
+            end
+          end
+          @stage = {}
           until @queue.empty?
             begin
               @queue.shift.purge
@@ -290,6 +303,8 @@ module Fluent
               @log.error "unexpected error while clearing buffer queue", error_class: e.class, error: e
             end
           end
+          @metadata_list = []
+          @stage_size = @queue_size = 0
         end
       end
 
@@ -314,6 +329,7 @@ module Fluent
             chunk.synchronize do # critical section for chunk (chunk append/commit/rollback)
               begin
                 empty_chunk = chunk.empty?
+                original_size = chunk.size
 
                 attempt = data.slice(0, attempt_records)
                 chunk.append(attempt)
@@ -338,6 +354,7 @@ module Fluent
                 end
 
                 chunk.commit
+                @stage_size += (chunk.size - original_size)
                 data.slice!(0, attempt_records)
                 # same attempt size
                 nil # discard return value of data.slice!() immediately
