@@ -48,8 +48,6 @@ module Fluent
       # optional new limitations
       config_param :chunk_records_limit, :integer, default: nil
 
-      attr_accessor :log
-
       Metadata = Struct.new(:timekey, :tag, :variables)
 
       def initialize
@@ -270,7 +268,7 @@ module Fluent
             chunk.purge if chunk
             @queue_size -= size
           rescue => e
-            @log.error "failed to purge buffer chunk", chunk_id: chunk_id, error_class: e.class, error: e
+            log.error "failed to purge buffer chunk", chunk_id: chunk_id, error_class: e.class, error: e
           end
 
           if metadata && !@stage[metadata] && (!@queued_num[metadata] || @queued_num[metadata] < 1)
@@ -286,7 +284,7 @@ module Fluent
             begin
               chunk.purge
             rescue => e
-              @log.error "unexpected error while clearing buffer stage", error_class: e.class, error: e
+              log.error "unexpected error while clearing buffer stage", error_class: e.class, error: e
             end
           end
           @stage = {}
@@ -294,7 +292,7 @@ module Fluent
             begin
               @queue.shift.purge
             rescue => e
-              @log.error "unexpected error while clearing buffer queue", error_class: e.class, error: e
+              log.error "unexpected error while clearing buffer queue", error_class: e.class, error: e
             end
           end
           @metadata_list = []
