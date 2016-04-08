@@ -16,6 +16,10 @@ class MemoryBufferTest < Test::Unit::TestCase
     @p.owner = @d
   end
 
+  test 'this is non persistent plugin' do
+    assert !@p.persistent?
+  end
+
   test '#resume always returns empty stage and queue' do
     ary = @p.resume
     assert_equal({}, ary[0])
