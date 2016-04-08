@@ -405,7 +405,7 @@ module Fluent
                     else
                       nil
                     end
-          pairs = Hash[@chunk_keys.map{|k| [k, record[k]]}]
+          pairs = Hash[@chunk_keys.map{|k| [k.to_sym, record[k]]}]
           @buffer.metadata(timekey: timekey, tag: (@chunk_key_tag ? tag : nil), variables: pairs)
         end
       end

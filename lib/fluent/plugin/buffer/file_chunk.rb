@@ -35,7 +35,7 @@ module Fluent
 
         FILE_PERMISSION = 0644
 
-        attr_reader :path, :state
+        attr_reader :path, :state, :permission
 
         def initialize(metadata, path, mode, perm: system_config.file_permission || FILE_PERMISSION)
           super(metadata)
@@ -43,7 +43,9 @@ module Fluent
           #   blocked is internal status for chunks waiting to be enqueued
           @state = nil
 
-          @file_permission = perm
+          @permission = perm
+
+          @bytesize = @records = @adding_bytes = @adding_records = 0
 
           case mode
           when :create then create_new_chunk(path, perm)
@@ -177,12 +179,11 @@ module Fluent
         end
 
         def restore_metadata(bindata)
-          # Any input errors are ignored
-          data = msgpack_unpacker.unpack(bindata, symbolize_keys: true) rescue {}
+          data = msgpack_unpacker(symbolize_keys: true).feed(bindata).read rescue {}
 
           now = current_time
 
-          @unique_id = data[:id] || unique_id_from_path(@path) || @unique_id
+          @unique_id = data[:id] || self.class.unique_id_from_path(@path) || @unique_id
           @records = data[:r] || 0
           @created_at = Time.at(data.fetch(:c, now.to_i))
           @modified_at = Time.at(data.fetch(:m, now.to_i))
@@ -193,7 +194,7 @@ module Fluent
         end
 
         def restore_metadata_partially(chunk)
-          @unique_id = unique_id_from_path(chunk.path) || @unique_id
+          @unique_id = self.class.unique_id_from_path(chunk.path) || @unique_id
           @records = 0
           @created_at = chunk.birthtime rescue chunk.ctime # birthtime isn't supported on Windows
           @modified_at = chunk.mtime
@@ -223,7 +224,7 @@ module Fluent
 
           write_metadata(update: false) # re-write metadata w/ finalized records
 
-          file_rename(@chunk, @path, new_chunk_path, ->(size){ @size = size })
+          file_rename(@chunk, @path, new_chunk_path, ->(new_io){ @chunk = new_io })
           @path = new_chunk_path
 
           file_rename(@meta, @meta_path, new_meta_path)
@@ -232,18 +233,21 @@ module Fluent
           @state = :queued
         end
 
-        def file_rename(file, old_path, new_path, callback)
+        def file_rename(file, old_path, new_path, callback=nil)
+          pos = file.pos
           if Fluent.windows?
-            pos = file.pos
             file.close
             File.rename(old_path, new_path)
-            file = File.open(new_path, 'rb', @file_permission)
-            file.sync = true
-            file.pos = pos
+            file = File.open(new_path, 'rb', @permission)
           else
-            file.rename(new_path)
+            File.rename(old_path, new_path)
+            file.reopen(new_path, 'rb')
           end
-          callback.call(file.size) if callback
+          file.set_encoding(Encoding::ASCII_8BIT)
+          file.sync = true
+          file.binmode
+          file.pos = pos
+          callback.call(file) if callback
         end
 
         def create_new_chunk(path, perm)
@@ -282,9 +286,9 @@ module Fluent
             @meta = File.open(@meta_path, 'r+')
             @meta.set_encoding(Encoding::ASCII_8BIT)
             @meta.sync = true
+            @meta.binmode
             restore_metadata(@meta.read)
             @meta.seek(0, IO::SEEK_SET)
-            @meta.binmode
 
             @state = :staged
             @bytesize = @chunk.size
@@ -293,23 +297,28 @@ module Fluent
             @adding_records = 0
           else
             # classic buffer chunk - read only chunk
-            @chunk = File.open(@path, 'r')
+            @chunk = File.open(@path, 'rb')
             @chunk.set_encoding(Encoding::ASCII_8BIT)
             @chunk.binmode
+            @chunk.seek(0, IO::SEEK_SET)
             @state = :queued
             @bytesize = @chunk.size
 
             restore_metadata_partially(@chunk)
 
-            @unique_id = unique_id_from_path(@path) || @unique_id
+            @commit_position = @chunk.size
+            @unique_id = self.class.unique_id_from_path(@path) || @unique_id
           end
         end
 
         def load_existing_enqueued_chunk(path)
           @path = path
-          @chunk = File.open(@path, mode)
+          @chunk = File.open(@path, 'rb')
+          @chunk.set_encoding(Encoding::ASCII_8BIT)
           @chunk.binmode
+          @chunk.seek(0, IO::SEEK_SET)
           @bytesize = @chunk.size
+          @commit_position = @chunk.size
 
           @meta_path = @path + '.meta'
           if File.readable?(@meta_path)

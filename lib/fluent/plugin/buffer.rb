@@ -59,12 +59,6 @@ module Fluent
         @total_bytes_limit = nil
         @queue_length_limit = nil
         @chunk_records_limit = nil
-
-        @log = nil
-
-        @_owner = nil
-        @_plugin_id = nil
-        @_plugin_id_configured = false
       end
 
       def persistent?
