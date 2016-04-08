@@ -281,23 +281,16 @@ module Fluent
 
       def clear!
         synchronize do
-          @stage.values.each do |chunk|
-            begin
-              chunk.purge
-            rescue => e
-              log.error "unexpected error while clearing buffer stage", error_class: e.class, error: e
-            end
-          end
-          @stage = {}
           until @queue.empty?
             begin
-              @queue.shift.purge
+              q = @queue.shift
+              log.debug("purging a chunk in queue"){ {id: chunk.unique_id, size: chunk.size, records: chunk.records} }
+              q.purge
             rescue => e
               log.error "unexpected error while clearing buffer queue", error_class: e.class, error: e
             end
           end
-          @metadata_list = []
-          @stage_size = @queue_size = 0
+          @queue_size = 0
         end
       end
 
