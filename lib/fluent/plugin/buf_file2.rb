@@ -87,7 +87,8 @@ module Fluent
         queue = []
 
         Dir.glob(@path) do |path|
-          m = new_metadata()
+          m = new_metadata() # this metadata will be overwritten by resuming .meta file content
+                             # so it should not added into @metadata_list for now
           mode = Fluent::Plugin::Buffer::FileChunk.assume_chunk_state(path)
           chunk = Fluent::Plugin::Buffer::FileChunk.new(m, path, mode) # file chunk resumes contents of metadata
           case chunk.state
@@ -98,7 +99,6 @@ module Fluent
           else
             raise "BUG: unexpected chunk state '#{chunk.state}' for path '#{path}'"
           end
-          add_metadata(chunk.metadata)
         end
 
         queue.sort_by!{ |chunk| chunk.modified_at }

@@ -57,6 +57,14 @@ module Fluent
         @total_bytes_limit = nil
         @queue_length_limit = nil
         @chunk_records_limit = nil
+
+        @stage = {}    #=> Hash (metadata -> chunk) : not flushed yet
+        @queue = []    #=> Array (chunks)           : already flushed (not written)
+        @dequeued = {} #=> Hash (unique_id -> chunk): already written (not purged)
+        @queued_num = {} # metadata => int (number of queued chunks)
+
+        @stage_size = @queue_size = 0
+        @metadata_list = [] # keys of @stage
       end
 
       def persistent?
@@ -73,20 +81,13 @@ module Fluent
 
       def start
         super
-        # stage #=> Hash (metadata -> chunk): not flushed yet
-        # queue #=> Array (chunks)          : already flushed (not written)
-        @stage, @queue = resume
 
-        @queued_num = {} # metadata => int (number of queued chunks)
+        @stage, @queue = resume
         @queue.each do |chunk|
+          @metadata_list << chunk.metadata unless @metadata_list.include?(chunk.metadata)
           @queued_num[chunk.metadata] ||= 0
           @queued_num[chunk.metadata] += 1
         end
-
-        @dequeued = {} # unique_id => chunk
-
-        @stage_size = @queue_size = 0
-        @metadata_list = [] # keys of @stage
       end
 
       def close
@@ -106,7 +107,7 @@ module Fluent
 
       def terminate
         super
-        @stage = @queue = nil
+        @dequeued = @stage = @queue = nil
       end
 
       def storable?
