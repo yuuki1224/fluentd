@@ -33,10 +33,13 @@ module Fluent
 
       # TODO: buffer_path based on system config
       desc 'The path where buffer chunks are stored.'
-      config_param :path, :string
+      config_param :path, :string, :permission
 
       config_set_default :chunk_bytes_limit, DEFAULT_CHUNK_BYTES_LIMIT
       config_set_default :total_bytes_limit, DEFAULT_TOTAL_BYTES_LIMIT
+
+      config_param :file_permission, :string, default: nil # '0644'
+      config_param :dir_permission,  :string, default: nil # '0755'
 
       ##TODO: Buffer plugin cannot handle symlinks because new API @stage has many writing buffer chunks
       ##      re-implement this feature on out_file, w/ enqueue_chunk(or generate_chunk) hook + chunk.path
@@ -47,7 +50,6 @@ module Fluent
       def initialize
         super
         @symlink_path = nil
-        @dir_permission = system_config.dir_permission || DIR_PERMISSION
       end
 
       def configure(conf)
@@ -64,10 +66,14 @@ module Fluent
         unless @path.include?('*')
           @path += '.*.log'
         end
+
+        unless @dir_permission
+          @dir_permission = system_config.dir_permission || DIR_PERMISSION
+        end
       end
 
       def start
-        FileUtils.mkdir_p File.dirname(@buffer_path_prefix + "path"), mode: @dir_permission
+        FileUtils.mkdir_p File.dirname(@path), mode: @dir_permission
 
         super
       end
@@ -102,7 +108,11 @@ module Fluent
 
       def generate_chunk(metadata)
         # FileChunk generates real path with unique_id
-        Fluent::Plugin::Buffer::FileChunk.new(metadata, @path, :create)
+        if @file_permission
+          Fluent::Plugin::Buffer::FileChunk.new(metadata, @path, :create, perm: @file_permission)
+        else
+          Fluent::Plugin::Buffer::FileChunk.new(metadata, @path, :create)
+        end
       end
     end
   end
