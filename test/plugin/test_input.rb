@@ -13,6 +13,40 @@ class InputTest < Test::Unit::TestCase
     @p = FluentPluginInputTest::DummyPlugin.new
   end
 
+  test 'has healthy lifecycle' do
+    assert !@p.configured?
+    @p.configure(config_element())
+    assert @p.configured?
+
+    assert !@p.started?
+    @p.start
+    assert @p.start
+
+    assert !@p.stopped?
+    @p.stop
+    assert @p.stopped?
+
+    assert !@p.before_shutdown?
+    @p.before_shutdown
+    assert @p.before_shutdown?
+
+    assert !@p.shutdown?
+    @p.shutdown
+    assert @p.shutdown?
+
+    assert !@p.after_shutdown?
+    @p.after_shutdown
+    assert @p.after_shutdown?
+
+    assert !@p.closed?
+    @p.close
+    assert @p.closed?
+
+    assert !@p.terminated?
+    @p.terminate
+    assert @p.terminated?
+  end
+
   test 'has plugin_id automatically generated' do
     assert @p.respond_to?(:plugin_id_configured?)
     assert @p.respond_to?(:plugin_id)
