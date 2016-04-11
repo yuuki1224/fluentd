@@ -27,6 +27,7 @@ module Fluent
     end
 
     def initialize
+      super
       # to simulate implicit 'attr_accessor' by config_param / config_section and its value by config_set_default
       proxy = self.class.merged_configure_proxy
       proxy.params.keys.each do |name|

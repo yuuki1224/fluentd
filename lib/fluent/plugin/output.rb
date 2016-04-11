@@ -119,6 +119,9 @@ module Fluent
       FlushThreadState = Struct.new(:thread, :next_time)
       DequeuedChunkInfo = Struct.new(:chunk_id, :time)
 
+      # for tests
+      attr_reader :chunk_keys, :chunk_key_time, :chunk_key_tag
+
       def initialize
         super
         @buffering = false
@@ -166,6 +169,7 @@ module Fluent
             @output_time_formatter_cache = {}
           end
 
+          @flush_mode = @buffer_config.flush_mode
           if @flush_mode == :default
             @flush_mode = (@chunk_key_time ? :none : :fast)
           end
@@ -175,6 +179,7 @@ module Fluent
           @buffer = Plugin.new_buffer(buffer_type, parent: self)
           @buffer.configure(buffer_conf)
 
+          @flush_at_shutdown = @buffer_config.flush_at_shutdown
           if @flush_at_shutdown.nil?
             @flush_at_shutdown = if @buffer.persistent?
                                    false
@@ -328,7 +333,7 @@ module Fluent
 
       # TODO: optimize this code
       def extract_placeholders(str, metadata)
-        if meatadata.timekey.nil? && meatadata.tag.nil? && metadata.variables.nil?
+        if metadata.timekey.nil? && metadata.tag.nil? && metadata.variables.nil?
           str
         else
           rvalue = str
@@ -351,9 +356,9 @@ module Fluent
           end
           # ${a_chunk_key}, ...
           if !@chunk_keys.empty? && metadata.variables
-            hash = {}
+            hash = {'${tag}' => '${tag}'} # not to erase this wrongly
             @chunk_keys.each do |key|
-              hash[key] = metadata.variables[key]
+              hash["${#{key}}"] = metadata.variables[key.to_sym]
             end
             rvalue = rvalue.gsub(CHUNK_KEY_PLACEHOLDER_PATTERN, hash)
           end
@@ -386,7 +391,7 @@ module Fluent
         @counters_monitor.synchronize{ @emit_count += 1 }
         begin
           metalist = handle_stream(tag, es)
-          if @buffer_config.flush_mode == :immediate
+          if @flush_mode == :immediate
             matalist.each do |meta|
               @buffer.enqueue_chunk(meta)
             end
@@ -583,7 +588,7 @@ module Fluent
 
       def enqueue_thread_run
         value_for_interval = nil
-        if @buffer_config.flush_mode == :fast
+        if @flush_mode == :fast
           value_for_interval = @buffer_config.flush_interval
         end
         if @chunk_key_time
@@ -604,7 +609,7 @@ module Fluent
             current_time = Time.now
 
             begin
-              if @buffer_config.flush_mode == :fast
+              if @flush_mode == :fast
                 flush_interval = @buffer_config.flush_interval
                 @buffer.enqueue_all{ |metadata, chunk| chunk.created_at + flush_interval <= current_time }
               end
