@@ -650,7 +650,7 @@ class BufferTest < Test::Unit::TestCase
     end
 
     test '#size_over? returns false if chunk size is bigger than limit' do
-      m = create_metadata(timekey: Time.parse('2016-04-11 16:40:00 +0000').to_i)
+      m = create_metadata(Time.parse('2016-04-11 16:40:00 +0000').to_i)
 
       c1 = create_chunk(m, ["a" * 128] * 8)
       assert !@p.size_over?(c1)
@@ -666,7 +666,7 @@ class BufferTest < Test::Unit::TestCase
       assert_equal [@dm0,@dm0,@dm0,@dm0,@dm0,@dm1,@dm1,@dm1,@dm1], @p.queue.map(&:metadata)
       assert_equal [@dm2,@dm3], @p.stage.keys
 
-      m = create_metadata(timekey: Time.parse('2016-04-11 16:40:00 +0000').to_i)
+      m = create_metadata(Time.parse('2016-04-11 16:40:00 +0000').to_i)
 
       assert_raise Fluent::Plugin::Buffer::BufferChunkOverflowError do
         @p.emit(m, ["a" * 128] * 9)
@@ -702,7 +702,7 @@ class BufferTest < Test::Unit::TestCase
     test '#size_over? returns false if too many records exists in a chunk even if its bytes is less than limit' do
       assert_equal 6, @p.chunk_records_limit
 
-      m = create_metadata(timekey: Time.parse('2016-04-11 16:40:00 +0000').to_i)
+      m = create_metadata(Time.parse('2016-04-11 16:40:00 +0000').to_i)
 
       c1 = create_chunk(m, ["a" * 128] * 6)
       assert_equal 6, c1.records
