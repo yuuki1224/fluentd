@@ -38,7 +38,7 @@ module Fluent
       # `<buffer>` and `<secondary>` sections are available only when '#format' and '#write' are implemented
       config_section :buffer, param_name: :buffer_config, init: true, required: false, multi: false, final: true do
         config_argument :chunk_keys, :array, value_type: :string, default: []
-        config_param :@type, :string, default: 'memory'
+        config_param :@type, :string, default: 'memory2'
 
         config_param :timekey_range, :time, default: nil # range size to be used: `time.to_i / @timekey_range`
         config_param :timekey_use_utc, :bool, default: false # default is localtime
@@ -49,7 +49,7 @@ module Fluent
         config_param :flush_at_shutdown, :bool, default: nil # change default by buffer_plugin.persistent?
 
         desc 'How to enqueue chunks to be flushed. "fast" flushes per flush_interval, "immediate" flushes just after event arrival.'
-        config_param :flush_mode, :enum, list: [:none, :fast, :immediate], default: :fast
+        config_param :flush_mode, :enum, list: [:default, :none, :fast, :immediate], default: :default
         config_param :flush_interval, :time, default: 60, desc: 'The interval between buffer chunk flushes.'
 
         config_param :flush_threads, :integer, default: 1, desc: 'The number of threads to flush the buffer.'
@@ -166,6 +166,10 @@ module Fluent
             @output_time_formatter_cache = {}
           end
 
+          if @flush_mode == :default
+            @flush_mode = (@chunk_key_time ? :none : :fast)
+          end
+
           buffer_type = @buffer_config[:@type]
           buffer_conf = conf.elements.select{|e| e.name == 'buffer' }.first || Fluent::Config::Element.new('buffer', '', {}, [])
           @buffer = Plugin.new_buffer(buffer_type, parent: self)
@@ -203,6 +207,7 @@ module Fluent
         if @secondary_config
           raise Fluent::ConfigError, "Invalid <secondary> section for non-buffered plugin" unless @buffering
           raise Fluent::ConfigError, "<secondary> section cannot have <buffer> section" if @secondary_config.buffer
+          raise Fluent::ConfigError, "<secondary> section and 'retry_forever' are exclusive" if @buffer_config.retry_forever
 
           secondary_type = @secondary_config[:@type]
           secondary_conf = conf.elements.select{|e| e.name == 'secondary' }.first
@@ -446,9 +451,8 @@ module Fluent
           @dequeued_chunks_mutex.synchronize do
             @dequeued_chunks.delete_if { |info| info.chunk_id == chunk_id }
           end
-        else
-          @buffer.purge_chunk(chunk_id)
         end
+        @buffer.purge_chunk(chunk_id)
 
         @retry_mutex.synchronize do
           if @retry # success to flush chunks in retries

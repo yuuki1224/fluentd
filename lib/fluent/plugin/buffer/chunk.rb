@@ -92,6 +92,9 @@ module Fluent
           size == 0
         end
 
+        ## method for post-process of enqueue (e.g., renaming file for file chunks)
+        # def enqueued!
+
         def close
           raise NotImplementedError, "Implement this method in child class"
         end

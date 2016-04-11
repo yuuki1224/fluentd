@@ -50,6 +50,10 @@ module Fluent
 
       Metadata = Struct.new(:timekey, :tag, :variables)
 
+      # for tests
+      attr_accessor :stage_size, :queue_size
+      attr_reader :stage, :queue, :dequeued, :queued_num
+
       def initialize
         super
 
@@ -83,10 +87,15 @@ module Fluent
         super
 
         @stage, @queue = resume
+        @stage.each_pair do |metadata, chunk|
+          @metadata_list << metadata unless @metadata_list.include?(metadata)
+          @stage_size += chunk.size
+        end
         @queue.each do |chunk|
           @metadata_list << chunk.metadata unless @metadata_list.include?(chunk.metadata)
           @queued_num[chunk.metadata] ||= 0
           @queued_num[chunk.metadata] += 1
+          @queue_size += chunk.size
         end
       end
 
@@ -107,11 +116,12 @@ module Fluent
 
       def terminate
         super
-        @dequeued = @stage = @queue = nil
+        @dequeued = @stage = @queue = @queued_num = @metadata_list = nil
+        @stage_size = @queue_size = 0
       end
 
       def storable?
-        @total_size_limit > @stage_size + @queue_size
+        @total_bytes_limit > @stage_size + @queue_size
       end
 
       ## TODO: for back pressure feature
@@ -150,7 +160,7 @@ module Fluent
       end
 
       def metadata(timekey: nil, tag: nil, variables: nil)
-        meta = new_meatadata(timekey: timekey, tag: tag, variables: variables)
+        meta = new_metadata(timekey: timekey, tag: tag, variables: variables)
         add_metadata(meta)
       end
 
@@ -258,8 +268,8 @@ module Fluent
           return false unless chunk # already purged by other thread
           @queue.unshift(chunk)
           @queued_num[chunk.metadata] += 1 # BUG if nil
-          true
         end
+        true
       end
 
       def purge_chunk(chunk_id)
@@ -348,8 +358,9 @@ module Fluent
                 data.slice!(0, attempt_records)
                 # same attempt size
                 nil # discard return value of data.slice!() immediately
-              ensure
+              rescue
                 chunk.rollback
+                raise
               end
             end
           end
