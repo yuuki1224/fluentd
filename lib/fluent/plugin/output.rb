@@ -147,14 +147,17 @@ module Fluent
             if !implement?(:buffered) && !implement?(:delayed_commit)
               @buffering = false
             else
-              @buffering = prefer_buffered_processing
+              # @buffering.nil? shows that enabling buffering or not will be decided in lazy way in #start
+              @buffering = nil
             end
           else # buffered or delayed_commit is supported by `unless` of first line in this method
             @buffering = true
           end
         end
 
-        if @buffering
+        if @buffering || @buffering.nil?
+          # When @buffering.nil?, @buffer_config was initialized with default value for all parameters.
+          # If so, this configuration MUST success.
           @chunk_keys = @buffer_config.chunk_keys
           @chunk_key_time = !!@chunk_keys.delete('time')
           @chunk_key_tag = !!@chunk_keys.delete('tag')
@@ -191,22 +194,6 @@ module Fluent
             log.warn "'flush_at_shutdown' is false, and buffer plugin '#{buf_type}' is not persistent buffer."
             log.warn "your configuration will lose buffered data at shutdown. please confirm your configuration again."
           end
-
-          @delayed_commit = if implement?(:buffered) && implement?(:delayed_commit)
-                              prefer_delayed_commit
-                            else
-                              implement?(:delayed_commit)
-                            end
-
-          m = method(:emit_buffered)
-          (class << self; self; end).module_eval do
-            define_method(:emit, m)
-          end
-        else
-          m = method(:emit_sync)
-          (class << self; self; end).module_eval do
-            define_method(:emit, m)
-          end
         end
 
         if @secondary_config
@@ -237,7 +224,25 @@ module Fluent
         @emit_count = 0
         @emit_records = 0
 
+        if @buffering.nil?
+          @buffering = prefer_buffered_processing
+          unless @buffering
+            @buffer.terminate # it's not started, so terminate will be enough
+          end
+        end
+
         if @buffering
+          m = method(:emit_buffered)
+          (class << self; self; end).module_eval do
+            define_method(:emit, m)
+          end
+
+          @delayed_commit = if implement?(:buffered) && implement?(:delayed_commit)
+                              prefer_delayed_commit
+                            else
+                              implement?(:delayed_commit)
+                            end
+
           @retry = nil
           @retry_mutex = Mutex.new
 
@@ -250,7 +255,7 @@ module Fluent
           @dequeued_chunks = []
           @dequeued_chunks_mutex = Mutex.new
 
-          @flush_threads.times do |i|
+          @buffer_config.flush_threads.times do |i|
             thread_title = "flush_thread_#{i}".to_sym
             thread_state = FlushThreadState.new(nil, nil)
             thread = thread_create(thread_title, thread_state, &method(:flush_thread_run))
@@ -262,7 +267,12 @@ module Fluent
           @output_flush_thread_current_position = 0
 
           if @flush_mode == :fast || @chunk_key_time
-            thread_craete(:enqueue_thread, &method(:enqueue_thread_run))
+            thread_create(:enqueue_thread, &method(:enqueue_thread_run))
+          end
+        else # !@buffered
+          m = method(:emit_sync)
+          (class << self; self; end).module_eval do
+            define_method(:emit, m)
           end
         end
       end
@@ -275,10 +285,12 @@ module Fluent
       def before_shutdown
         super
 
-        if @flush_at_shutdown
-          force_flush
+        if @buffering
+          if @flush_at_shutdown
+            force_flush
+          end
+          @buffer.before_shutdown
         end
-        @buffer.before_shutdown if @buffering
       end
 
       def shutdown
@@ -392,11 +404,11 @@ module Fluent
         begin
           metalist = handle_stream(tag, es)
           if @flush_mode == :immediate
-            matalist.each do |meta|
+            metalist.each do |meta|
               @buffer.enqueue_chunk(meta)
             end
           end
-          if !@retry && @buffer.enqueued?
+          if !@retry && @buffer.queued?
             submit_flush_once
           end
         rescue
@@ -471,7 +483,7 @@ module Fluent
       def try_rollback_write
         now = Time.now
         @dequeued_chunks_mutex.synchronize do
-          while @dequeued_chunks.first && @dequeued_chunks.first.time + @delayed_commit_timeout < now
+          while @dequeued_chunks.first && @dequeued_chunks.first.time + @buffer_config.delayed_commit_timeout < now
             info = @dequeued_chunks.shift
             if @buffer.takeback_chunk(info.chunk_id)
               log.warn "failed to flush chunk, timeout to commit.", plugin_id: plugin_id, chunk_id: info.chunk_id, flushed_at: info.time
@@ -498,7 +510,7 @@ module Fluent
             @retry ? @retry.next_time : Time.now + @buffer_config.flush_burst_interval
           end
         else
-          Time.now + @flush_thread_interval
+          Time.now + @buffer_config.flush_thread_interval
         end
       end
 
@@ -568,7 +580,7 @@ module Fluent
 
       def submit_flush_once
         # Without locks: it is rough but enough to select "next" writer selection
-        @output_flush_thread_current_position = (@output_flush_thread_current_position + 1) % @flush_threads
+        @output_flush_thread_current_position = (@output_flush_thread_current_position + 1) % @buffer_config.flush_threads
         state = @output_flush_threads[@output_flush_thread_current_position]
         state.next_time = 0
         state.thread.run
@@ -580,7 +592,7 @@ module Fluent
       end
 
       def submit_flush_all
-        while !@retry && @buffer.enqueued?
+        while !@retry && @buffer.queued?
           submit_flush_once
           sleep @buffer_config.flush_burst_interval
         end
