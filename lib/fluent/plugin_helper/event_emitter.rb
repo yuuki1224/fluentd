@@ -15,6 +15,7 @@
 #
 
 require 'fluent/engine'
+require 'fluent/time'
 
 module Fluent
   module PluginHelper

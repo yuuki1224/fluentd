@@ -137,6 +137,7 @@ module Fluent
           val
         end
 
+        # to override in tests
         def current_time
           Time.now
         end

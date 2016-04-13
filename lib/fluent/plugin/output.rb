@@ -119,8 +119,11 @@ module Fluent
       FlushThreadState = Struct.new(:thread, :next_time)
       DequeuedChunkInfo = Struct.new(:chunk_id, :time)
 
+      attr_reader :num_errors, :emit_count, :emit_records, :write_count, :rollback_count
+
       # for tests
-      attr_reader :chunk_keys, :chunk_key_time, :chunk_key_tag
+      attr_reader :buffer, :chunk_keys, :chunk_key_time, :chunk_key_tag
+      attr_accessor :output_enqueue_thread_waiting
 
       def initialize
         super
@@ -223,6 +226,8 @@ module Fluent
         @num_errors = 0
         @emit_count = 0
         @emit_records = 0
+        @write_count = 0
+        @rollback_count = 0
 
         if @buffering.nil?
           @buffering = prefer_buffered_processing
@@ -251,6 +256,14 @@ module Fluent
           @output_flush_threads = []
           @output_flush_threads_mutex = Mutex.new
           @output_flush_threads_running = true
+
+          # mainly for test: detect enqueue works as code below:
+          #   @output.interrupt_flushes
+          #   # emits
+          #   @output.enqueue_thread_wait
+          @output_flush_interrupted = false
+          @output_enqueue_thread_mutex = Mutex.new
+          @output_enqueue_thread_waiting = false
 
           @dequeued_chunks = []
           @dequeued_chunks_mutex = Mutex.new
@@ -307,7 +320,9 @@ module Fluent
 
           @output_flush_threads_running = false
           @output_flush_threads.each do |state|
-            state.thread.run # to wakeup thread and make it to stop by itself
+            state.thread.run if state.thread.alive? # to wakeup thread and make it to stop by itself
+          end
+          @output_flush_threads.each do |state|
             state.thread.join
           end
         end
@@ -481,11 +496,12 @@ module Fluent
       end
 
       def try_rollback_write
-        now = Time.now
+        now = current_time
         @dequeued_chunks_mutex.synchronize do
           while @dequeued_chunks.first && @dequeued_chunks.first.time + @buffer_config.delayed_commit_timeout < now
             info = @dequeued_chunks.shift
             if @buffer.takeback_chunk(info.chunk_id)
+              # TODO: @rollback_count
               log.warn "failed to flush chunk, timeout to commit.", plugin_id: plugin_id, chunk_id: info.chunk_id, flushed_at: info.time
               log.warn_backtrace e.backtrace
             end
@@ -498,6 +514,7 @@ module Fluent
           until @dequeued_chunks.empty?
             info = @dequeued_chunks.shift
             if @buffer.takeback_chunk(info.chunk_id)
+              # TODO: @rollback_count
               log.info "delayed commit for buffer chunk was cancelled in shutdown", plugin_id: plugin_id, chunk_id: info.chunk_id
             end
           end
@@ -507,15 +524,16 @@ module Fluent
       def next_flush_time
         if @buffer.queued?
           @retry_mutex.synchronize do
-            @retry ? @retry.next_time : Time.now + @buffer_config.flush_burst_interval
+            @retry ? @retry.next_time : current_time + @buffer_config.flush_burst_interval
           end
         else
-          Time.now + @buffer_config.flush_thread_interval
+          current_time + @buffer_config.flush_thread_interval
         end
       end
 
       def try_flush
         chunk = @buffer.dequeue_chunk
+        p({c: !!chunk})
         return unless chunk
 
         output = self
@@ -528,12 +546,17 @@ module Fluent
         begin
           if @delayed_commit && output.implement?(:delayed_commit) # output may be secondary, and secondary plugin may not support delayed commit
             output.try_write(chunk)
+            @counters_monitor.synchronize{ @write_count += 1 }
             @dequeued_chunks_mutex.synchronize do
-              @dequeued_chunks << DequeuedChunkInfo.new(chunk.unique_id, Time.now)
+              @dequeued_chunks << DequeuedChunkInfo.new(chunk.unique_id, current_time)
             end
           else # output plugin without delayed purge
             chunk_id = chunk.unique_id
+            p "write"
             output.write(chunk)
+            p "countup"
+            @counters_monitor.synchronize{ @write_count += 1 }
+            p "commit"
             commit_write(chunk_id)
           end
         rescue => e
@@ -552,6 +575,10 @@ module Fluent
                 log.warn_backtrace e.backtrace
               end
             else
+              raise
+              p e.class
+              p e.message
+              p e
               @retry = retry_state()
               @counters_monitor.synchronize{ @num_errors += 1 }
               log.warn "failed to flush the buffer.", plugin_id: plugin_id, next_retry: @retry.next_time, error_class: e.class, error: e
@@ -598,6 +625,36 @@ module Fluent
         end
       end
 
+      # only for tests of output plugin
+      def interrupt_flushes
+        @output_flush_interrupted = true
+      end
+
+      # only for tests of output plugin
+      def enqueue_thread_wait
+        @output_enqueue_thread_mutex.synchronize do
+          @output_flush_interrupted = false
+          @output_enqueue_thread_waiting = true
+        end
+        require 'timeout'
+        Timeout.timeout(10) do
+          Thread.pass while @output_enqueue_thread_waiting
+        end
+        @output_flush_threads.each do |state|
+          state.next_time = 0
+          state.thread.run
+        end
+      end
+
+      # only for tests of output plugin
+      def flush_thread_wakeup
+      end
+
+      # to override in tests
+      def current_time
+        Time.now
+      end
+
       def enqueue_thread_run
         value_for_interval = nil
         if @flush_mode == :fast
@@ -618,26 +675,32 @@ module Fluent
 
         begin
           while @output_flush_threads_running
-            current_time = Time.now
+            now = current_time
+            if @output_flush_interrupted
+              sleep interval
+              next
+            end
 
+            @output_enqueue_thread_mutex.lock
             begin
               if @flush_mode == :fast
                 flush_interval = @buffer_config.flush_interval
-                @buffer.enqueue_all{ |metadata, chunk| chunk.created_at + flush_interval <= current_time }
+                @buffer.enqueue_all{ |metadata, chunk| chunk.created_at + flush_interval <= now }
               end
 
               if @chunk_key_time
                 timekey_range = @buffer_config.timekey_range
                 timekey_wait = @buffer_config.timekey_wait
-                current_time_int = current_time.to_i
+                current_time_int = now.to_i
                 current_time_range = current_time_int - current_time_int % timekey_range
-                @buffer.enqueue_all{ |metadata, chunk| metadata.timekey < current_time_range && metadata.timekey + timekey_range + timekey_wait <= current_time }
+                @buffer.enqueue_all{ |metadata, chunk| metadata.timekey < current_time_range && metadata.timekey + timekey_range + timekey_wait <= current_time_int }
               end
             rescue => e
               log.error "unexpected error while checking flushed chunks. ignored.", plugin_id: plugin_id, error_class: e.class, error: e
               log.error_backtrace
             end
-
+            @output_enqueue_thread_waiting = false
+            @output_enqueue_thread_mutex.unlock
             sleep interval
           end
         rescue => e
@@ -661,20 +724,24 @@ module Fluent
             time = Process.clock_gettime(clock_id)
             interval = state.next_time - time
 
-            if state.next_time <= time
+            if state.next_time <= time && !@output_flush_interrupted
+              p "try_flush"
               try_flush
               # next_flush_interval uses flush_thread_interval or flush_burst_interval (or retrying)
-              interval = next_flush_time.to_f - Time.now.to_f
+              interval = next_flush_time.to_f - current_time.to_f
               state.next_time = Process.clock_gettime(clock_id) + interval
             end
 
             if @delayed_commit && @dequeued_chunks_mutex.synchronize{ !@dequeued_chunks.empty? }
-              try_rollback_write
+              unless @output_flush_interrupted
+                try_rollback_write
+              end
             end
 
             sleep interval if interval > 0
           end
         rescue => e
+          raise
           # normal errors are rescued by output plugins in #try_flush
           # so this rescue section is for critical & unrecoverable errors
           log.error "error on output thread", plugin_id: plugin_id, error_class: e.class, error: e

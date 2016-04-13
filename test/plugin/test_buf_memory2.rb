@@ -3,7 +3,7 @@ require 'fluent/plugin/buf_memory2'
 require 'fluent/plugin/output'
 require 'flexmock/test_unit'
 
-module FluentPluginBufferTest
+module FluentPluginMemoryBufferTest
   class DummyOutputPlugin < Fluent::Plugin::Output
   end
 end
@@ -11,7 +11,7 @@ end
 class MemoryBufferTest < Test::Unit::TestCase
   setup do
     Fluent::Test.setup
-    @d = FluentPluginBufferTest::DummyOutputPlugin.new
+    @d = FluentPluginMemoryBufferTest::DummyOutputPlugin.new
     @p = Fluent::Plugin::MemoryBuffer.new
     @p.owner = @d
   end

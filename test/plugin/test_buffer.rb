@@ -8,27 +8,6 @@ require 'fluent/plugin_id'
 
 require 'time'
 
-def create_buffer(hash)
-  buffer_conf = config_element('buffer', '', hash, [])
-  owner = FluentPluginBufferTest::DummyOutputPlugin.new
-  owner.configure(config_element('ROOT', '', {}, [ buffer_conf ]))
-  p = FluentPluginBufferTest::DummyPlugin.new
-  p.owner = owner
-  p.configure(buffer_conf)
-  p
-end
-
-def create_metadata(timekey=nil, tag=nil, variables=nil)
-  Fluent::Plugin::Buffer::Metadata.new(timekey, tag, variables)
-end
-
-def create_chunk(metadata, data)
-  c = FluentPluginBufferTest::DummyMemoryChunk.new(metadata)
-  c.append(data)
-  c.commit
-  c
-end
-
 module FluentPluginBufferTest
   class DummyOutputPlugin < Fluent::Plugin::Base
     include Fluent::PluginId
@@ -61,6 +40,15 @@ module FluentPluginBufferTest
     end
   end
   class DummyPlugin < Fluent::Plugin::Buffer
+    def create_metadata(timekey=nil, tag=nil, variables=nil)
+      Fluent::Plugin::Buffer::Metadata.new(timekey, tag, variables)
+    end
+    def create_chunk(metadata, data)
+      c = FluentPluginBufferTest::DummyMemoryChunk.new(metadata)
+      c.append(data)
+      c.commit
+      c
+    end
     def resume
       dm0 = create_metadata(Time.parse('2016-04-11 16:00:00 +0000').to_i, nil, nil)
       dm1 = create_metadata(Time.parse('2016-04-11 16:10:00 +0000').to_i, nil, nil)
@@ -84,6 +72,27 @@ module FluentPluginBufferTest
 end
 
 class BufferTest < Test::Unit::TestCase
+  def create_buffer(hash)
+    buffer_conf = config_element('buffer', '', hash, [])
+    owner = FluentPluginBufferTest::DummyOutputPlugin.new
+    owner.configure(config_element('ROOT', '', {}, [ buffer_conf ]))
+    p = FluentPluginBufferTest::DummyPlugin.new
+    p.owner = owner
+    p.configure(buffer_conf)
+    p
+  end
+
+  def create_metadata(timekey=nil, tag=nil, variables=nil)
+    Fluent::Plugin::Buffer::Metadata.new(timekey, tag, variables)
+  end
+
+  def create_chunk(metadata, data)
+    c = FluentPluginBufferTest::DummyMemoryChunk.new(metadata)
+    c.append(data)
+    c.commit
+    c
+  end
+
   setup do
     Fluent::Test.setup
   end

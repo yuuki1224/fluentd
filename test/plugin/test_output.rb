@@ -2,73 +2,83 @@ require_relative '../helper'
 require 'fluent/plugin/output'
 require 'fluent/plugin/buffer'
 
-def create_output(type=:full)
-  case type
-  when :bare     then FluentPluginOutputTest::DummyBareOutput.new
-  when :sync     then FluentPluginOutputTest::DummySyncOutput.new
-  when :buffered then FluentPluginOutputTest::DummyAsyncOutput.new
-  when :delayed  then FluentPluginOutputTest::DummyDelayedOutput.new
-  when :full     then FluentPluginOutputTest::DummyFullFeatureOutput.new
-  else
-    raise ArgumentError, "unknown type: #{type}"
-  end
-end
-def create_metadata(timekey: nil, tag: nil, variables: nil)
-  Fluent::Plugin::Buffer::Metadata.new(timekey, tag, variables)
-end
+require 'json'
+require 'time'
+require 'timeout'
 
 module FluentPluginOutputTest
   class DummyBareOutput < Fluent::Plugin::Output
-  end
-  class DummySyncOutput < Fluent::Plugin::Output
-    def process(tag, es)
+    def register(name, &block)
+      instance_variable_set("@#{name}", block)
     end
   end
-  class DummyAsyncOutput < Fluent::Plugin::Output
-    attr_accessor :formatter
+  class DummySyncOutput < DummyBareOutput
+    def process(tag, es)
+      @process ? @process.call(tag, es) : nil
+    end
+  end
+  class DummyAsyncOutput < DummyBareOutput
     def format(tag, time, record)
-      @formatter ? @formatter.call(tag, time, record) : ''
+      @format ? @format.call(tag, time, record) : [tag, time, record].to_json
     end
     def write(chunk)
+      @write ? @write.call(chunk) : nil
     end
   end
-  class DummyDelayedOutput < Fluent::Plugin::Output
-    attr_accessor :formatter
+  class DummyDelayedOutput < DummyBareOutput
     def format(tag, time, record)
-      @formatter ? @formatter.call(tag, time, record) : ''
+      @format ? @format.call(tag, time, record) : [tag, time, record].to_json
     end
     def try_write(chunk)
+      @try_write ? @try_write.call(chunk) : nil
     end
   end
-  class DummyFullFeatureOutput < Fluent::Plugin::Output
-    attr_accessor :prefer_buffered, :prefer_delayed, :formatter
-    def initialize
-      super
-      @formatter = nil
-      @prefer_buffered = @prefer_delayed = false
-    end
+  class DummyFullFeatureOutput < DummyBareOutput
     def prefer_buffered_processing
-      @prefer_buffered
+      @prefer_buffered_processing ? @prefer_buffered_processing.call : false
     end
     def prefer_delayed_commit
-      @prefer_delayed
+      @prefer_delayed_commit ? @prefer_delayed_commit.call : false
     end
     def process(tag, es)
+      @process ? @process.call(tag, es) : nil
     end
     def format(tag, time, record)
-      @formatter ? @formatter.call(tag, time, record) : ''
+      @format ? @format.call(tag, time, record) : [tag, time, record].to_json
     end
     def write(chunk)
+      @write ? @write.call(chunk) : nil
     end
     def try_write(chunk)
+      @try_write ? @try_write.call(chunk) : nil
     end
   end
 end
 
 class OutputTest < Test::Unit::TestCase
+  def create_output(type=:full)
+    case type
+    when :bare     then FluentPluginOutputTest::DummyBareOutput.new
+    when :sync     then FluentPluginOutputTest::DummySyncOutput.new
+    when :buffered then FluentPluginOutputTest::DummyAsyncOutput.new
+    when :delayed  then FluentPluginOutputTest::DummyDelayedOutput.new
+    when :full     then FluentPluginOutputTest::DummyFullFeatureOutput.new
+    else
+      raise ArgumentError, "unknown type: #{type}"
+    end
+  end
+  def create_metadata(timekey: nil, tag: nil, variables: nil)
+    Fluent::Plugin::Buffer::Metadata.new(timekey, tag, variables)
+  end
+  def waiting(seconds)
+    Timeout.timeout(seconds) do
+      yield
+    end
+  end
+
   sub_test_case 'basic output feature' do
     setup do
-      @i = FluentPluginOutputTest::DummyFullFeatureOutput.new
+      @i = create_output(:full)
     end
 
     test '#implement? can return features for plugin instances' do
@@ -131,7 +141,7 @@ class OutputTest < Test::Unit::TestCase
       assert !@i.chunk_key_tag
       assert_equal [], @i.chunk_keys
       tmpl = "/mypath/%Y/%m/%d/${tag}/${tag[1]}/${tag[2]}/${key1}/${key2}/tail"
-      t = Time.parse('2016-04-11 20:30:00 +0900').to_i
+      t = event_time('2016-04-11 20:30:00 +0900')
       v = {key1: "value1", key2: "value2"}
       m = create_metadata(timekey: t, tag: 'fluentd.test.output', variables: v)
       assert_equal tmpl, @i.extract_placeholders(tmpl, m)
@@ -143,7 +153,7 @@ class OutputTest < Test::Unit::TestCase
       assert !@i.chunk_key_tag
       assert_equal [], @i.chunk_keys
       tmpl = "/mypath/%Y/%m/%d/%H-%M/${tag}/${tag[1]}/${tag[2]}/${key1}/${key2}/tail"
-      t = Time.parse('2016-04-11 20:30:00 +0900').to_i
+      t = event_time('2016-04-11 20:30:00 +0900')
       v = {key1: "value1", key2: "value2"}
       m = create_metadata(timekey: t, tag: 'fluentd.test.output', variables: v)
       assert_equal "/mypath/2016/04/11/20-30/${tag}/${tag[1]}/${tag[2]}/${key1}/${key2}/tail", @i.extract_placeholders(tmpl, m)
@@ -155,7 +165,7 @@ class OutputTest < Test::Unit::TestCase
       assert @i.chunk_key_tag
       assert_equal [], @i.chunk_keys
       tmpl = "/mypath/%Y/%m/%d/%H-%M/${tag}/${tag[1]}/${tag[2]}/${key1}/${key2}/tail"
-      t = Time.parse('2016-04-11 20:30:00 +0900').to_i
+      t = event_time('2016-04-11 20:30:00 +0900')
       v = {key1: "value1", key2: "value2"}
       m = create_metadata(timekey: t, tag: 'fluentd.test.output', variables: v)
       assert_equal "/mypath/%Y/%m/%d/%H-%M/fluentd.test.output/test/output/${key1}/${key2}/tail", @i.extract_placeholders(tmpl, m)
@@ -167,7 +177,7 @@ class OutputTest < Test::Unit::TestCase
       assert !@i.chunk_key_tag
       assert_equal ['key1','key2'], @i.chunk_keys
       tmpl = "/mypath/%Y/%m/%d/%H-%M/${tag}/${tag[1]}/${tag[2]}/${key1}/${key2}/tail"
-      t = Time.parse('2016-04-11 20:30:00 +0900').to_i
+      t = event_time('2016-04-11 20:30:00 +0900')
       v = {key1: "value1", key2: "value2"}
       m = create_metadata(timekey: t, tag: 'fluentd.test.output', variables: v)
       assert_equal "/mypath/%Y/%m/%d/%H-%M/${tag}/${tag[1]}/${tag[2]}/value1/value2/tail", @i.extract_placeholders(tmpl, m)
@@ -179,7 +189,7 @@ class OutputTest < Test::Unit::TestCase
       assert @i.chunk_key_tag
       assert_equal ['key1','key2'], @i.chunk_keys
       tmpl = "/mypath/%Y/%m/%d/%H-%M/${tag}/${tag[1]}/${tag[2]}/${key1}/${key2}/tail"
-      t = Time.parse('2016-04-11 20:30:00 +0900').to_i
+      t = event_time('2016-04-11 20:30:00 +0900')
       v = {key1: "value1", key2: "value2"}
       m = create_metadata(timekey: t, tag: 'fluentd.test.output', variables: v)
       assert_equal "/mypath/2016/04/11/20-30/fluentd.test.output/test/output/value1/value2/tail", @i.extract_placeholders(tmpl, m)
@@ -191,7 +201,7 @@ class OutputTest < Test::Unit::TestCase
       assert @i.chunk_key_tag
       assert_equal ['key1','key2'], @i.chunk_keys
       tmpl = "/mypath/%Y/%m/%d/%H-%M/${tag}/${tag[3]}/${tag[4]}/${key3}/${key4}/tail"
-      t = Time.parse('2016-04-11 20:30:00 +0900').to_i
+      t = event_time('2016-04-11 20:30:00 +0900')
       v = {key1: "value1", key2: "value2"}
       m = create_metadata(timekey: t, tag: 'fluentd.test.output', variables: v)
       assert_equal "/mypath/2016/04/11/20-30/fluentd.test.output/////tail", @i.extract_placeholders(tmpl, m)
@@ -199,8 +209,8 @@ class OutputTest < Test::Unit::TestCase
 
     test '#metadata returns object which contains tag/timekey/variables from records as specified in configuration' do
       tag = 'test.output'
-      time = Time.parse('2016-04-12 15:31:23 -0700').to_i
-      timekey = Time.parse('2016-04-12 15:00:00 -0700').to_i
+      time = event_time('2016-04-12 15:31:23 -0700')
+      timekey = event_time('2016-04-12 15:00:00 -0700')
       record = {"key1" => "value1", "num1" => 1, "message" => "my message"}
 
       i1 = create_output(:buffered)
@@ -239,15 +249,11 @@ class OutputTest < Test::Unit::TestCase
     test '#emit calls #process via #emit_sync for non-buffered output' do
       i = create_output(:sync)
       process_called = false
-      (class << i; self; end).module_eval do
-        define_method(:process){ |tag, es|
-          process_called = true
-        }
-      end
+      i.register(:process){|tag, es| process_called = true }
       i.configure(config_element())
       i.start
 
-      t = Time.now.to_i
+      t = event_time()
       i.emit('tag', [ [t, {"key" => "value1"}], [t, {"key" => "value2"}] ])
 
       assert process_called
@@ -258,16 +264,11 @@ class OutputTest < Test::Unit::TestCase
     test '#emit calls #format for buffered output' do
       i = create_output(:buffered)
       format_called_times = 0
-      (class << i; self; end).module_eval do
-        define_method(:format){ |tag, time, record|
-          format_called_times += 1
-          ''
-        }
-      end
+      i.register(:format){|tag, time, record| format_called_times += 1; '' }
       i.configure(config_element())
       i.start
 
-      t = Time.now.to_i
+      t = event_time()
       i.emit('tag', [ [t, {"key" => "value1"}], [t, {"key" => "value2"}] ])
 
       assert_equal 2, format_called_times
@@ -279,27 +280,17 @@ class OutputTest < Test::Unit::TestCase
       i = create_output(:full)
 
       process_called = false
-      (class << i; self; end).module_eval do
-        define_method(:process){ |tag, es|
-          process_called = true
-        }
-      end
       format_called_times = 0
-      (class << i; self; end).module_eval do
-        define_method(:format){ |tag, time, record|
-          format_called_times += 1
-          ''
-        }
-      end
+      i.register(:process){|tag, es| process_called = true }
+      i.register(:format){|tag, time, record| format_called_times += 1; '' }
 
       i.configure(config_element())
-      i.prefer_buffered = false # delayed decision is possible to change after (output's) configure
+      i.register(:prefer_buffered_processing){ false } # delayed decision is possible to change after (output's) configure
       i.start
 
-      assert !i.prefer_buffered
       assert !i.prefer_buffered_processing
 
-      t = Time.now.to_i
+      t = event_time()
       i.emit('tag', [ [t, {"key" => "value1"}], [t, {"key" => "value2"}] ])
 
       assert process_called
@@ -312,27 +303,17 @@ class OutputTest < Test::Unit::TestCase
       i = create_output(:full)
 
       process_called = false
-      (class << i; self; end).module_eval do
-        define_method(:process){ |tag, es|
-          process_called = true
-        }
-      end
       format_called_times = 0
-      (class << i; self; end).module_eval do
-        define_method(:format){ |tag, time, record|
-          format_called_times += 1
-          ''
-        }
-      end
+      i.register(:process){|tag, es| process_called = true }
+      i.register(:format){|tag, time, record| format_called_times += 1; '' }
 
       i.configure(config_element())
-      i.prefer_buffered = true # delayed decision is possible to change after (output's) configure
+      i.register(:prefer_buffered_processing){ true } # delayed decision is possible to change after (output's) configure
       i.start
 
-      assert i.prefer_buffered
       assert i.prefer_buffered_processing
 
-      t = Time.now.to_i
+      t = event_time()
       i.emit('tag', [ [t, {"key" => "value1"}], [t, {"key" => "value2"}] ])
 
       assert !process_called
@@ -343,16 +324,13 @@ class OutputTest < Test::Unit::TestCase
 
     test 'output plugin will call #write for normal buffered plugin to flush buffer chunks' do
       i = create_output(:buffered)
-      i.formatter = ->(tag, time, record){ [tag,time,record].to_json }
       write_called = false
-      (class << i; self; end).module_eval do
-        define_method(:write){ |chunk| write_called = true }
-      end
+      i.register(:write){ |chunk| write_called = true }
 
       i.configure(config_element('ROOT', '', {}, [config_element('buffer', '', {"flush_mode" => "immediate"})]))
       i.start
 
-      t = Time.now.to_i
+      t = event_time()
       i.emit('tag', [ [t, {"key" => "value1"}], [t, {"key" => "value2"}] ])
       i.force_flush
 
@@ -363,16 +341,13 @@ class OutputTest < Test::Unit::TestCase
 
     test 'output plugin will call #try_write for plugin supports delayed commit only to flush buffer chunks' do
       i = create_output(:delayed)
-      i.formatter = ->(tag, time, record){ [tag,time,record].to_json }
       try_write_called = false
-      (class << i; self; end).module_eval do
-        define_method(:try_write){ |chunk| try_write_called = true; commit_write(chunk.unique_id) }
-      end
+      i.register(:try_write){|chunk| try_write_called = true; commit_write(chunk.unique_id) }
 
       i.configure(config_element('ROOT', '', {}, [config_element('buffer', '', {"flush_mode" => "immediate"})]))
       i.start
 
-      t = Time.now.to_i
+      t = event_time()
       i.emit('tag', [ [t, {"key" => "value1"}], [t, {"key" => "value2"}] ])
       i.force_flush
 
@@ -383,24 +358,18 @@ class OutputTest < Test::Unit::TestCase
 
     test '#prefer_delayed_commit (returns false) decides delayed commit is disabled if both are implemented' do
       i = create_output(:full)
-      i.formatter = ->(tag, time, record){ [tag,time,record].to_json }
       write_called = false
       try_write_called = false
-      (class << i; self; end).module_eval do
-        define_method(:write){ |chunk| write_called = true }
-      end
-      (class << i; self; end).module_eval do
-        define_method(:try_write){ |chunk| try_write_called = true; commit_write(chunk.unique_id) }
-      end
+      i.register(:write){ |chunk| write_called = true }
+      i.register(:try_write){|chunk| try_write_called = true; commit_write(chunk.unique_id) }
 
       i.configure(config_element('ROOT', '', {}, [config_element('buffer', '', {"flush_mode" => "immediate"})]))
-      i.prefer_delayed = false # delayed decision is possible to change after (output's) configure
+      i.register(:prefer_delayed_commit){ false } # delayed decision is possible to change after (output's) configure
       i.start
 
-      assert !i.prefer_delayed
       assert !i.prefer_delayed_commit
 
-      t = Time.now.to_i
+      t = event_time()
       i.emit('tag', [ [t, {"key" => "value1"}], [t, {"key" => "value2"}] ])
       i.force_flush
 
@@ -412,24 +381,18 @@ class OutputTest < Test::Unit::TestCase
 
     test '#prefer_delayed_commit (returns true) decides delayed commit is enabled if both are implemented' do
       i = create_output(:full)
-      i.formatter = ->(tag, time, record){ [tag,time,record].to_json }
       write_called = false
       try_write_called = false
-      (class << i; self; end).module_eval do
-        define_method(:write){ |chunk| write_called = true }
-      end
-      (class << i; self; end).module_eval do
-        define_method(:try_write){ |chunk| try_write_called = true; commit_write(chunk.unique_id) }
-      end
+      i.register(:write){ |chunk| write_called = true }
+      i.register(:try_write){|chunk| try_write_called = true; commit_write(chunk.unique_id) }
 
       i.configure(config_element('ROOT', '', {}, [config_element('buffer', '', {"flush_mode" => "immediate"})]))
-      i.prefer_delayed = true # delayed decision is possible to change after (output's) configure
+      i.register(:prefer_delayed_commit){ true } # delayed decision is possible to change after (output's) configure
       i.start
 
-      assert i.prefer_delayed
       assert i.prefer_delayed_commit
 
-      t = Time.now.to_i
+      t = event_time()
       i.emit('tag', [ [t, {"key" => "value1"}], [t, {"key" => "value2"}] ])
       i.force_flush
 
@@ -441,98 +404,36 @@ class OutputTest < Test::Unit::TestCase
   end
 
   sub_test_case 'sync output feature' do
-    test 'raises configuration error if <buffer> section is specified'
-    test 'raises configuration error if <secondary> section is specified'
-    test '#process is called for each event streams'
-  end
+    setup do
+      @i = create_output(:sync)
+    end
 
-  sub_test_case 'buffered output feature without any buffer key, flush_mode: none' do
-    test '#start does not create enqueue thread, but creates flush threads'
-    test '#format is called for each event streams'
-    test '#write is called only when chunk bytes limit exceeded, and buffer chunk is purged'
-    test 'flush_at_shutdown work well when plugin is shutdown'
-  end
+    test 'raises configuration error if <buffer> section is specified' do
+      assert_raise Fluent::ConfigError do
+        @i.configure(config_element('ROOT','',{},[config_element('buffer', '')]))
+      end
+    end
 
-  sub_test_case 'buffered output feature without any buffer key, flush_mode: fast' do
-    test '#start creates enqueue thread and flush threads'
-    test '#format is called for each event streams'
-    test '#write is called when chunk bytes limit exceeded, or per flush_interval, and buffer chunk is purged'
-    test 'flush_at_shutdown work well when plugin is shutdown'
-  end
+    test 'raises configuration error if <secondary> section is specified' do
+      assert_raise Fluent::ConfigError do
+        @i.configure(config_element('ROOT','',{},[config_element('secondary','')]))
+      end
+    end
 
-  sub_test_case 'buffered output feature without any buffer key, flush_mode: immediate' do
-    test '#start does not create enqueue thread, but creates flush threads'
-    test '#format is called for each event streams'
-    test '#write is called every time for each emits, and buffer chunk is purged'
-    test 'flush_at_shutdown work well when plugin is shutdown'
-  end
+    test '#process is called for each event streams' do
+      ary = []
+      @i.register(:process){|tag, es| ary << [tag, es] }
+      @i.configure(config_element())
+      @i.start
 
-  sub_test_case 'buffered output feature with timekey and range' do
-    test '#configure raises config error if timekey_range is not specified'
-    test 'default flush mode is set to :none'
-    test '#start creates enqueue thread and flush threads'
-    test '#format is called for each event streams'
-    test '#write is called per time ranges after timekey_wait, and buffer chunk is purged'
-    test 'flush_at_shutdown work well when plugin is shutdown'
-  end
+      t = event_time()
+      es = [ [t, {"key" => "value1"}], [t, {"key" => "value2"}] ]
+      5.times do
+        @i.emit('tag', es)
+      end
+      assert_equal 5, ary.size
 
-  sub_test_case 'buffered output feature with tag key' do
-    test 'default flush mode is set to :fast'
-    test '#start creates enqueue thread and flush threads'
-    test '#format is called for each event streams'
-    test '#write is called per tags, per flush_interval & chunk sizes, and buffer chunk is purged'
-    test 'flush_at_shutdown work well when plugin is shutdown'
-  end
-
-  sub_test_case 'buffered output feature with variables' do
-    test 'default flush mode is set to :fast'
-    test '#start creates enqueue thread and flush threads'
-    test '#format is called for each event streams'
-    test '#write is called per value combination of variables, per flush_interval & chunk sizes, and buffer chunk is purged'
-    test 'flush_at_shutdown work well when plugin is shutdown'
-  end
-
-  sub_test_case 'buffered output feature with many keys' do
-    test 'default flush mode is set to :fast if keys does not include time'
-    test 'default flush mode is set to :none if keys includes time'
-  end
-
-  sub_test_case 'buffered output feature with delayed commit' do
-    test '#format is called for each event streams'
-    test '#try_write is called per flush, buffer chunk is not purged'
-    test 'buffer chunk is purged when plugin calls #commit_write'
-    test '#try_rollback_write can rollback buffer chunks for delayed commit after timeout'
-    test '#try_rollback_all will be called for all waiting chunks when shutdown'
-  end
-
-  sub_test_case 'buffered output for retries with exponential backoff' do
-    test 'exponential backoff is default strategy for retries'
-    test 'max retry interval is limited by retry_max_interval'
-    test 'retry_timeout can limit total time for retries'
-    test 'retry_max_times can limit maximum times for retries'
-  end
-
-  sub_test_case 'bufferd output for retries with periodical retry' do
-    test 'periodical retries should retry to write in failing status per retry_wait'
-    test 'retry_timeout can limit total time for retries'
-    test 'retry_max_times can limit maximum times for retries'
-  end
-
-  sub_test_case 'buffered output configured as retry_forever' do
-    test 'configuration error will be raised if secondary section is configured'
-    test 'retry_timeout and retry_max_times will be ignored if retry_forever is true for exponential backoff'
-    test 'retry_timeout and retry_max_times will be ignored if retry_forever is true for periodical retries'
-  end
-
-  sub_test_case 'secondary plugin feature for buffered output with periodical retry' do
-    test 'raises configuration error if <buffer> section is specified in <secondary> section'
-    test 'warns if secondary plugin is different type from primary one'
-    test 'primary plugin will emit event streams to secondary after retries for time of retry_timeout * retry_secondary_threshold'
-    test 'exponential backoff interval will be initialized when switched to secondary'
-  end
-
-  sub_test_case 'secondary plugin feature for buffered output with exponential backoff' do
-    test 'primary plugin will emit event streams to secondary after retries for time of retry_timeout * retry_secondary_threshold'
-    test 'retry_wait for secondary is same with one for primary'
+      @i.stop; @i.before_shutdown; @i.shutdown; @i.after_shutdown; @i.close; @i.terminate
+    end
   end
 end

@@ -46,6 +46,7 @@ require 'fluent/plugin/base'
 require 'fluent/log'
 require 'fluent/plugin_id'
 require 'fluent/plugin_helper'
+require 'fluent/time'
 
 module Fluent
   module Plugin
@@ -66,6 +67,14 @@ end
 
 def config_element(name = 'test', argument = '', params = {}, elements = [])
   Fluent::Config::Element.new(name, argument, params, elements)
+end
+
+def event_time(str=nil)
+  if str
+    Fluent::EventTime.parse(str)
+  else
+    Fluent::EventTime.now
+  end
 end
 
 def unused_port(num = 1)
