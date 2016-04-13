@@ -72,8 +72,13 @@ class OutputTest < Test::Unit::TestCase
     Fluent::Plugin::Buffer::Metadata.new(timekey, tag, variables)
   end
   def waiting(seconds)
-    Timeout.timeout(seconds) do
-      yield
+    begin
+      Timeout.timeout(seconds) do
+        yield
+      end
+    rescue Timeout::Error
+      p @i.log.out.logs
+      raise
     end
   end
 
@@ -445,8 +450,10 @@ class OutputTest < Test::Unit::TestCase
       @i.thread_wait_until_start
 
       ary = []
+      metachecks = []
+
       @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
-      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| ary << JSON.parse(data) } }
+      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| e = JSON.parse(data); ary << e; metachecks << (chunk.metadata.timekey.to_i <= e[1].to_i && e[1].to_i < chunk.metadata.timekey.to_i + 30) } }
 
       r = {}
       (0...10).each do |i|
@@ -512,6 +519,8 @@ class OutputTest < Test::Unit::TestCase
       assert_equal 9, ary.size
       assert_equal 7, ary.select{|e| e[0] == "test.tag.1" }.size
       assert_equal 2, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      assert metachecks.all?{|e| e }
     end
 
     test 'flush_at_shutdown work well when plugin is shutdown' do
@@ -520,8 +529,10 @@ class OutputTest < Test::Unit::TestCase
       @i.thread_wait_until_start
 
       ary = []
+      metachecks = []
+
       @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
-      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| ary << JSON.parse(data) } }
+      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| e = JSON.parse(data); ary << e; metachecks << (chunk.metadata.timekey.to_i <= e[1].to_i && e[1].to_i < chunk.metadata.timekey.to_i + 30) } }
 
       r = {}
       (0...10).each do |i|
@@ -589,7 +600,12 @@ class OutputTest < Test::Unit::TestCase
       @i.shutdown
       @i.after_shutdown
 
+      waiting(4) do
+        Thread.pass until @i.write_count > 2
+      end
+
       assert_equal 11, ary.size
+      assert metachecks.all?{|e| e }
     end
   end
 
@@ -610,6 +626,7 @@ class OutputTest < Test::Unit::TestCase
     test 'default flush_mode is set to :fast' do
       assert_equal :fast, @i.instance_eval{ @flush_mode }
     end
+
     test '#start creates enqueue thread and flush threads' do
       @i.thread_wait_until_start
 
@@ -639,9 +656,10 @@ class OutputTest < Test::Unit::TestCase
       Timecop.freeze( Time.parse('2016-04-13 14:04:01 +0900') )
 
       ary = []
+      metachecks = []
 
       @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
-      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| ary << JSON.parse(data) } }
+      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| e = JSON.parse(data); ary << e; metachecks << (chunk.metadata.tag == e[0]) } }
 
       @i.thread_wait_until_start
 
@@ -650,23 +668,23 @@ class OutputTest < Test::Unit::TestCase
         r["key#{i}"] = "value #{i}"
       end
       ts = [
-        Fluent::EventTime.parse('2016-04-13 14:03:21 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:23 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:29 +0900'),
-        Fluent::EventTime.parse('2016-04-13 14:03:30 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:33 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:38 +0900'),
-        Fluent::EventTime.parse('2016-04-13 14:03:43 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:49 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:51 +0900'),
-        Fluent::EventTime.parse('2016-04-13 14:04:00 +0900'), Fluent::EventTime.parse('2016-04-13 14:04:01 +0900'),
+        event_time('2016-04-13 14:03:21 +0900'), event_time('2016-04-13 14:03:23 +0900'), event_time('2016-04-13 14:03:29 +0900'),
+        event_time('2016-04-13 14:03:30 +0900'), event_time('2016-04-13 14:03:33 +0900'), event_time('2016-04-13 14:03:38 +0900'),
+        event_time('2016-04-13 14:03:43 +0900'), event_time('2016-04-13 14:03:49 +0900'), event_time('2016-04-13 14:03:51 +0900'),
+        event_time('2016-04-13 14:04:00 +0900'), event_time('2016-04-13 14:04:01 +0900'),
       ]
       # size of a event is 197
       events = [
-        ["test.tag.1", ts[0], r], # range 14:03:00 - 03:29
+        ["test.tag.1", ts[0], r],
         ["test.tag.2", ts[1], r],
         ["test.tag.1", ts[2], r],
-        ["test.tag.1", ts[3], r], # range 14:03:30 - 04:00
+        ["test.tag.1", ts[3], r],
         ["test.tag.1", ts[4], r],
         ["test.tag.1", ts[5], r],
         ["test.tag.1", ts[6], r],
         ["test.tag.1", ts[7], r],
         ["test.tag.2", ts[8], r],
-        ["test.tag.1", ts[9], r], # range 14:04:00 - 04:29
+        ["test.tag.1", ts[9], r],
         ["test.tag.2", ts[10], r],
       ]
 
@@ -721,15 +739,18 @@ class OutputTest < Test::Unit::TestCase
       assert_equal 11, ary.size
       assert_equal 8, ary.select{|e| e[0] == "test.tag.1" }.size
       assert_equal 3, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      assert metachecks.all?{|e| e }
     end
 
     test 'flush_at_shutdown work well when plugin is shutdown' do
       Timecop.freeze( Time.parse('2016-04-13 14:04:01 +0900') )
 
       ary = []
+      metachecks = []
 
       @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
-      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| ary << JSON.parse(data) } }
+      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| e = JSON.parse(data); ary << e; metachecks << (chunk.metadata.tag == e[0]) } }
 
       @i.thread_wait_until_start
 
@@ -738,23 +759,23 @@ class OutputTest < Test::Unit::TestCase
         r["key#{i}"] = "value #{i}"
       end
       ts = [
-        Fluent::EventTime.parse('2016-04-13 14:03:21 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:23 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:29 +0900'),
-        Fluent::EventTime.parse('2016-04-13 14:03:30 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:33 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:38 +0900'),
-        Fluent::EventTime.parse('2016-04-13 14:03:43 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:49 +0900'), Fluent::EventTime.parse('2016-04-13 14:03:51 +0900'),
-        Fluent::EventTime.parse('2016-04-13 14:04:00 +0900'), Fluent::EventTime.parse('2016-04-13 14:04:01 +0900'),
+        event_time('2016-04-13 14:03:21 +0900'), event_time('2016-04-13 14:03:23 +0900'), event_time('2016-04-13 14:03:29 +0900'),
+        event_time('2016-04-13 14:03:30 +0900'), event_time('2016-04-13 14:03:33 +0900'), event_time('2016-04-13 14:03:38 +0900'),
+        event_time('2016-04-13 14:03:43 +0900'), event_time('2016-04-13 14:03:49 +0900'), event_time('2016-04-13 14:03:51 +0900'),
+        event_time('2016-04-13 14:04:00 +0900'), event_time('2016-04-13 14:04:01 +0900'),
       ]
       # size of a event is 197
       events = [
-        ["test.tag.1", ts[0], r], # range 14:03:00 - 03:29
+        ["test.tag.1", ts[0], r],
         ["test.tag.2", ts[1], r],
         ["test.tag.1", ts[2], r],
-        ["test.tag.1", ts[3], r], # range 14:03:30 - 04:00
+        ["test.tag.1", ts[3], r],
         ["test.tag.1", ts[4], r],
         ["test.tag.1", ts[5], r],
         ["test.tag.1", ts[6], r],
         ["test.tag.1", ts[7], r],
         ["test.tag.2", ts[8], r],
-        ["test.tag.1", ts[9], r], # range 14:04:00 - 04:29
+        ["test.tag.1", ts[9], r],
         ["test.tag.2", ts[10], r],
       ]
 
@@ -799,15 +820,221 @@ class OutputTest < Test::Unit::TestCase
       assert_equal 11, ary.size
       assert_equal 8, ary.select{|e| e[0] == "test.tag.1" }.size
       assert_equal 3, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      assert metachecks.all?{|e| e }
     end
   end
 
   sub_test_case 'buffered output feature with variables' do
-    test 'default flush mode is set to :fast'
-    test '#start creates enqueue thread and flush threads'
-    test '#format is called for each event streams'
-    test '#write is called per value combination of variables, per flush_interval & chunk sizes, and buffer chunk is purged'
-    test 'flush_at_shutdown work well when plugin is shutdown'
+    setup do
+      chunk_key = 'name,service'
+      hash = {
+        'flush_interval' => 10,
+        'flush_threads' => 1,
+        'flush_burst_interval' => 0.1,
+        'chunk_bytes_limit' => 1024,
+      }
+      @i = create_output(:buffered)
+      @i.configure(config_element('ROOT','',{},[config_element('buffer',chunk_key,hash)]))
+      @i.start
+    end
+
+    test 'default flush_mode is set to :fast' do
+      assert_equal :fast, @i.instance_eval{ @flush_mode }
+    end
+
+    test '#start creates enqueue thread and flush threads' do
+      @i.thread_wait_until_start
+
+      assert @i.thread_exist?(:flush_thread_0)
+      assert @i.thread_exist?(:enqueue_thread)
+    end
+
+    test '#format is called for each event streams' do
+      ary = []
+      @i.register(:format){|tag, time, record| ary << [tag, time, record]; '' }
+
+      t = event_time()
+      es = [
+        [t, {"key" => "value1", "name" => "moris", "service" => "a"}],
+        [t, {"key" => "value2", "name" => "moris", "service" => "b"}],
+      ]
+
+      5.times do
+        @i.emit('tag.test', es)
+      end
+
+      assert_equal 10, ary.size
+      5.times do |i|
+        assert_equal ["tag.test", t, {"key" => "value1", "name" => "moris", "service" => "a"}], ary[i*2]
+        assert_equal ["tag.test", t, {"key" => "value2", "name" => "moris", "service" => "b"}], ary[i*2+1]
+      end
+    end
+
+    test '#write is called per value combination of variables, per flush_interval & chunk sizes, and buffer chunk is purged' do
+      Timecop.freeze( Time.parse('2016-04-13 14:04:01 +0900') )
+
+      ary = []
+      metachecks = []
+
+      @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
+      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| e = JSON.parse(data); ary << e; metachecks << (e[2]["name"] == chunk.metadata.variables[:name] && e[2]["service"] == chunk.metadata.variables[:service]) } }
+
+      @i.thread_wait_until_start
+
+      # size of a event is 195
+      dummy_data = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      events = [
+        ["test.tag.1", event_time('2016-04-13 14:03:21 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1) xxx-a (6 events)
+        ["test.tag.2", event_time('2016-04-13 14:03:23 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}], #(2) yyy-a (3 events)
+        ["test.tag.1", event_time('2016-04-13 14:03:29 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.1", event_time('2016-04-13 14:03:30 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.1", event_time('2016-04-13 14:03:33 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.1", event_time('2016-04-13 14:03:38 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}], #(3) xxx-b (2 events)
+        ["test.tag.1", event_time('2016-04-13 14:03:43 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.1", event_time('2016-04-13 14:03:49 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}], #(3)
+        ["test.tag.2", event_time('2016-04-13 14:03:51 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}], #(2)
+        ["test.tag.1", event_time('2016-04-13 14:04:00 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.2", event_time('2016-04-13 14:04:01 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}], #(2)
+      ]
+
+      assert_equal 0, @i.write_count
+
+      @i.interrupt_flushes
+
+      events.shuffle.each do |tag, time, record|
+        @i.emit(tag, [ [time, record] ])
+      end
+      assert{ @i.buffer.stage.size == 3 }
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:02 +0900') )
+
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 0
+      end
+
+      assert{ @i.buffer.stage.size == 3 }
+      assert{ @i.write_count == 1 }
+      assert{ @i.buffer.queue.size == 0 }
+
+      # events fulfills a chunk (and queued immediately)
+      assert_equal 5, ary.size
+      assert_equal 5, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 0, ary.select{|e| e[0] == "test.tag.2" }.size
+      assert ary[0...5].all?{|e| e[2]["name"] == "xxx" && e[2]["service"] == "a" }
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:09 +0900') )
+
+      @i.enqueue_thread_wait
+
+      assert{ @i.buffer.stage.size == 3 }
+
+      # to trigger try_flush with flush_burst_interval
+      Timecop.freeze( Time.parse('2016-04-13 14:04:11 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:12 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:13 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:14 +0900') )
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      assert{ @i.buffer.stage.size == 0 }
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 1
+      end
+
+      assert{ @i.buffer.stage.size == 0 && @i.write_count == 4 }
+
+      assert_equal 11, ary.size
+      assert_equal 8, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 3, ary.select{|e| e[0] == "test.tag.2" }.size
+      assert_equal 6, ary.select{|e| e[2]["name"] == "xxx" && e[2]["service"] == "a" }.size
+      assert_equal 3, ary.select{|e| e[2]["name"] == "yyy" && e[2]["service"] == "a" }.size
+      assert_equal 2, ary.select{|e| e[2]["name"] == "xxx" && e[2]["service"] == "b" }.size
+
+      assert metachecks.all?{|e| e }
+    end
+
+    test 'flush_at_shutdown work well when plugin is shutdown' do
+      Timecop.freeze( Time.parse('2016-04-13 14:04:01 +0900') )
+
+      ary = []
+      metachecks = []
+
+      @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
+      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| e = JSON.parse(data); ary << e; metachecks << (e[2]["name"] == chunk.metadata.variables[:name] && e[2]["service"] == chunk.metadata.variables[:service]) } }
+
+      @i.thread_wait_until_start
+
+      # size of a event is 195
+      dummy_data = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      events = [
+        ["test.tag.1", event_time('2016-04-13 14:03:21 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1) xxx-a (6 events)
+        ["test.tag.2", event_time('2016-04-13 14:03:23 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}], #(2) yyy-a (3 events)
+        ["test.tag.1", event_time('2016-04-13 14:03:29 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.1", event_time('2016-04-13 14:03:30 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.1", event_time('2016-04-13 14:03:33 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.1", event_time('2016-04-13 14:03:38 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}], #(3) xxx-b (2 events)
+        ["test.tag.1", event_time('2016-04-13 14:03:43 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.1", event_time('2016-04-13 14:03:49 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}], #(3)
+        ["test.tag.2", event_time('2016-04-13 14:03:51 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}], #(2)
+        ["test.tag.1", event_time('2016-04-13 14:04:00 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}], #(1)
+        ["test.tag.2", event_time('2016-04-13 14:04:01 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}], #(2)
+      ]
+
+      assert_equal 0, @i.write_count
+
+      @i.interrupt_flushes
+
+      events.shuffle.each do |tag, time, record|
+        @i.emit(tag, [ [time, record] ])
+      end
+      assert{ @i.buffer.stage.size == 3 }
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:02 +0900') )
+
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 0
+      end
+
+      assert{ @i.buffer.stage.size == 3 }
+      assert{ @i.write_count == 1 }
+      assert{ @i.buffer.queue.size == 0 }
+
+      # events fulfills a chunk (and queued immediately)
+      assert_equal 5, ary.size
+      assert_equal 5, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 0, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      @i.stop
+      @i.before_shutdown
+      @i.shutdown
+      @i.after_shutdown
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 1
+      end
+
+      assert{ @i.buffer.stage.size == 0 && @i.buffer.queue.size == 0 && @i.write_count == 4 }
+
+      assert_equal 11, ary.size
+      assert_equal 8, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 3, ary.select{|e| e[0] == "test.tag.2" }.size
+      assert_equal 6, ary.select{|e| e[2]["name"] == "xxx" && e[2]["service"] == "a" }.size
+      assert_equal 3, ary.select{|e| e[2]["name"] == "yyy" && e[2]["service"] == "a" }.size
+      assert_equal 2, ary.select{|e| e[2]["name"] == "xxx" && e[2]["service"] == "b" }.size
+
+      assert metachecks.all?{|e| e }
+    end
   end
 
   sub_test_case 'buffered output feature with many keys' do
