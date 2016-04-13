@@ -81,7 +81,7 @@ module Fluent
           @records += @adding_records
           @bytesize += @adding_bytes
           @adding_bytes = @adding_records = 0
-          @modified_at = current_time
+          @modified_at = Time.now
 
           true
         end
@@ -137,11 +137,6 @@ module Fluent
           val
         end
 
-        # to override in tests
-        def current_time
-          Time.now
-        end
-
         def self.assume_chunk_state(path)
           if /\.(b|q)([0-9a-f]+)\.[^\/]*\Z/n =~ path # //n switch means explicit 'ASCII-8BIT' pattern
             $1 == 'b' ? :staged : :queued
@@ -182,7 +177,7 @@ module Fluent
         def restore_metadata(bindata)
           data = msgpack_unpacker(symbolize_keys: true).feed(bindata).read rescue {}
 
-          now = current_time
+          now = Time.now
 
           @unique_id = data[:id] || self.class.unique_id_from_path(@path) || @unique_id
           @records = data[:r] || 0
@@ -210,7 +205,7 @@ module Fluent
               id: @unique_id,
               r: (update ? @records + @adding_records : @records),
               c: @created_at.to_i,
-              m: (update ? current_time : @modified_at).to_i,
+              m: (update ? Time.now : @modified_at).to_i,
           })
           @meta.seek(0, IO::SEEK_SET)
           @meta.truncate(0)

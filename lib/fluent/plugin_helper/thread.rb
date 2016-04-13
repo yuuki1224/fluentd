@@ -53,7 +53,7 @@ module Fluent
             yield *t_args
             thread_exit = true
           rescue => e
-            # log.warn "thread exited by unexpected error", plugin: self.class, title: title, error_class: e.class, error: e
+            log.warn "thread exited by unexpected error", plugin: self.class, title: title, error_class: e.class, error: e
             thread_exit = true
             raise
           ensure

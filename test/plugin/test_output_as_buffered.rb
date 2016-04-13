@@ -5,6 +5,7 @@ require 'fluent/plugin/buffer'
 require 'json'
 require 'time'
 require 'timeout'
+require 'timecop'
 
 module FluentPluginOutputAsBufferedTest
   class DummyBareOutput < Fluent::Plugin::Output
@@ -85,6 +86,7 @@ class OutputTest < Test::Unit::TestCase
       @i.close unless @i.closed?
       @i.terminate unless @i.terminated?
     end
+    Timecop.return
   end
 
   sub_test_case 'buffered output feature without any buffer key, flush_mode: none' do
@@ -438,10 +440,7 @@ class OutputTest < Test::Unit::TestCase
     end
 
     test '#write is called per time ranges after timekey_wait, and buffer chunk is purged' do
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:00 +0900') }
-      (class << @i; self; end).module_eval do
-        define_method(:current_time){ time_proc.call }
-      end
+      Timecop.freeze( Time.parse('2016-04-13 14:04:00 +0900') )
 
       @i.thread_wait_until_start
 
@@ -485,7 +484,6 @@ class OutputTest < Test::Unit::TestCase
 
       @i.enqueue_thread_wait
 
-      # time_proc = ->(){ Time.parse('2016-04-13 14:04:00 +0900') }
       waiting(4) do
         Thread.pass until @i.write_count > 0
       end
@@ -496,13 +494,13 @@ class OutputTest < Test::Unit::TestCase
       assert_equal 2, ary.select{|e| e[0] == "test.tag.1" }.size
       assert_equal 1, ary.select{|e| e[0] == "test.tag.2" }.size
 
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:04 +0900') }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:04 +0900') )
 
       @i.enqueue_thread_wait
 
       assert{ @i.buffer.stage.size == 2 && @i.write_count == 1 }
 
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:06 +0900') }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:06 +0900') )
 
       @i.enqueue_thread_wait
       waiting(4) do
@@ -517,10 +515,7 @@ class OutputTest < Test::Unit::TestCase
     end
 
     test 'flush_at_shutdown work well when plugin is shutdown' do
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:00 +0900') }
-      (class << @i; self; end).module_eval do
-        define_method(:current_time){ time_proc.call }
-      end
+      Timecop.freeze( Time.parse('2016-04-13 14:04:00 +0900') )
 
       @i.thread_wait_until_start
 
@@ -564,20 +559,19 @@ class OutputTest < Test::Unit::TestCase
 
       @i.enqueue_thread_wait
 
-      # time_proc = ->(){ Time.parse('2016-04-13 14:04:00 +0900') }
       waiting(4) do
         Thread.pass until @i.write_count > 0
       end
 
       assert{ @i.buffer.stage.size == 2 && @i.write_count == 1 }
 
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:04 +0900') }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:04 +0900') )
 
       @i.enqueue_thread_wait
 
       assert{ @i.buffer.stage.size == 2 && @i.write_count == 1 }
 
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:06 +0900') }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:06 +0900') )
 
       @i.enqueue_thread_wait
       waiting(4) do
@@ -586,7 +580,7 @@ class OutputTest < Test::Unit::TestCase
 
       assert{ @i.buffer.stage.size == 1 && @i.write_count == 2 }
 
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:13 +0900') }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:13 +0900') )
 
       assert_equal 9, ary.size
 
@@ -642,14 +636,12 @@ class OutputTest < Test::Unit::TestCase
     end
 
     test '#write is called per tags, per flush_interval & chunk sizes, and buffer chunk is purged' do
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:01 +0900') }
-      (class << @i; self; end).module_eval do
-        define_method(:current_time){ time_proc.call }
-      end
-      @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
-      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| ary << JSON.parse(data) } }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:01 +0900') )
 
       ary = []
+
+      @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
+      @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| ary << JSON.parse(data) } }
 
       @i.thread_wait_until_start
 
@@ -686,14 +678,12 @@ class OutputTest < Test::Unit::TestCase
         @i.emit(tag, [ [time, record] ])
       end
       assert{ @i.buffer.stage.size == 2 } # test.tag.1 x1, test.tag.2 x1
-      assert{ @i.buffer.queue.size == 1 }
-      assert{ @i.write_count == 0 }
 
-      # time_proc = ->(){ Time.parse('2016-04-13 14:04:02 +0900') }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:02 +0900') )
 
       @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
 
-      # time_proc = ->(){ Time.parse('2016-04-13 14:04:01 +0900') }
       waiting(4) do
         Thread.pass until @i.write_count > 0
       end
@@ -702,21 +692,25 @@ class OutputTest < Test::Unit::TestCase
       assert{ @i.write_count == 1 }
       assert{ @i.buffer.queue.size == 0 }
 
+      # events fulfills a chunk (and queued immediately)
       assert_equal 5, ary.size
       assert_equal 5, ary.select{|e| e[0] == "test.tag.1" }.size
       assert_equal 0, ary.select{|e| e[0] == "test.tag.2" }.size
 
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:09 +0900') }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:09 +0900') )
 
       @i.enqueue_thread_wait
 
-      assert{ @i.buffer.stage.size == 2 && @i.write_count == 1 }
+      assert{ @i.buffer.stage.size == 2 }
 
       # to trigger try_flush with flush_burst_interval
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:11 +0900') }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:11 +0900') )
       @i.enqueue_thread_wait
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:12 +0900') }
+      Timecop.freeze( Time.parse('2016-04-13 14:04:15 +0900') )
       @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      assert{ @i.buffer.stage.size == 0 }
 
       waiting(4) do
         Thread.pass until @i.write_count > 1
@@ -730,17 +724,14 @@ class OutputTest < Test::Unit::TestCase
     end
 
     test 'flush_at_shutdown work well when plugin is shutdown' do
-      skip
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:01 +0900') }
-      (class << @i; self; end).module_eval do
-        define_method(:current_time){ time_proc.call }
-      end
+      Timecop.freeze( Time.parse('2016-04-13 14:04:01 +0900') )
+
+      ary = []
+
       @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
       @i.register(:write){|chunk| chunk.read.split("\n").reject{|l| l.empty? }.each{|data| ary << JSON.parse(data) } }
 
       @i.thread_wait_until_start
-
-      ary = []
 
       r = {}
       (0...10).each do |i|
@@ -775,12 +766,12 @@ class OutputTest < Test::Unit::TestCase
         @i.emit(tag, [ [time, record] ])
       end
       assert{ @i.buffer.stage.size == 2 } # test.tag.1 x1, test.tag.2 x1
-      assert{ @i.buffer.queue.size == 1 }
-      assert{ @i.write_count == 0 }
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:02 +0900') )
 
       @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
 
-      # time_proc = ->(){ Time.parse('2016-04-13 14:04:01 +0900') }
       waiting(4) do
         Thread.pass until @i.write_count > 0
       end
@@ -789,27 +780,21 @@ class OutputTest < Test::Unit::TestCase
       assert{ @i.write_count == 1 }
       assert{ @i.buffer.queue.size == 0 }
 
+      # events fulfills a chunk (and queued immediately)
       assert_equal 5, ary.size
       assert_equal 5, ary.select{|e| e[0] == "test.tag.1" }.size
       assert_equal 0, ary.select{|e| e[0] == "test.tag.2" }.size
 
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:09 +0900') }
-
-      @i.enqueue_thread_wait
-
-      assert{ @i.buffer.stage.size == 2 && @i.write_count == 1 }
-
-      # to trigger try_flush with flush_burst_interval
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:11 +0900') }
-      @i.enqueue_thread_wait
-      time_proc = ->(){ Time.parse('2016-04-13 14:04:12 +0900') }
-      @i.enqueue_thread_wait
+      @i.stop
+      @i.before_shutdown
+      @i.shutdown
+      @i.after_shutdown
 
       waiting(4) do
         Thread.pass until @i.write_count > 1
       end
 
-      assert{ @i.buffer.stage.size == 0 && @i.write_count == 3 }
+      assert{ @i.buffer.stage.size == 0 && @i.buffer.queue.size == 0 && @i.write_count == 3 }
 
       assert_equal 11, ary.size
       assert_equal 8, ary.select{|e| e[0] == "test.tag.1" }.size

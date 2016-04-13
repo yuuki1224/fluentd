@@ -3,6 +3,8 @@ require 'fluent/plugin/buffer/file_chunk'
 
 require 'fileutils'
 require 'msgpack'
+require 'time'
+require 'timecop'
 
 class BufferFileChunkTest < Test::Unit::TestCase
   setup do
@@ -10,6 +12,9 @@ class BufferFileChunkTest < Test::Unit::TestCase
     @chunkdir = File.expand_path('../../tmp/buffer_file_chunk', __FILE__)
     FileUtils.rm_r @chunkdir rescue nil
     FileUtils.mkdir_p @chunkdir
+  end
+  teardown do
+    Timecop.return
   end
 
   Metadata = Struct.new(:timekey, :tag, :variables)
@@ -344,11 +349,8 @@ class BufferFileChunkTest < Test::Unit::TestCase
       @c.append([d3.to_json + "\n", d4.to_json + "\n"])
       # append does write_metadata
 
-      require 'time'
       dummy_now = Time.parse('2016-04-07 16:59:59 +0900')
-      (class << @c; self; end).module_eval do
-        define_method(:current_time){ dummy_now }
-      end
+      Timecop.freeze(dummy_now)
       @c.write_metadata
 
       expected = {
@@ -500,11 +502,9 @@ class BufferFileChunkTest < Test::Unit::TestCase
         c: Time.parse('2016-04-07 17:44:00 +0900').to_i,
         m: Time.parse('2016-04-07 17:44:38 +0900').to_i,
       }
-      require 'time'
+
       dummy_now = Time.parse('2016-04-07 17:44:38 +0900')
-      (class << @c; self; end).module_eval do
-        define_method(:current_time){ dummy_now }
-      end
+      Timecop.freeze(dummy_now)
       @c.write_metadata
 
       assert_equal metadata, read_metadata_file(@c.path + '.meta')
