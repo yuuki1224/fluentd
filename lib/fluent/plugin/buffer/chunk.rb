@@ -16,16 +16,18 @@
 
 require 'fluent/msgpack_factory'
 require 'fluent/plugin/buffer'
+require 'fluent/unique_id'
 
 require 'fileutils'
 require 'monitor'
 
 module Fluent
   module Plugin
-    class Buffer
+    class Buffer # fluent/plugin/buffer is alread loaded
       class Chunk
         include MonitorMixin
         include MessagePackFactory::Mixin
+        include UniqueId::Mixin
 
         # Chunks has 2 part:
         # * metadata: contains metadata which should be restored after resume (if possible)
@@ -56,16 +58,6 @@ module Fluent
         end
 
         attr_reader :unique_id, :metadata, :created_at, :modified_at
-
-        def generate_unique_id
-          now = Time.now.utc
-          u1 = ((now.to_i * 1000 * 1000 + now.usec) << 12 | rand(0xfff))
-          [u1 >> 32, u1 & 0xffffffff, rand(0xffffffff), rand(0xffffffff)].pack('NNNN')
-        end
-
-        def self.unique_id_hex(unique_id)
-          unique_id.unpack('N*').map{|n| n.to_s(16) }.join
-        end
 
         # data is array of formatted record string
         def append(data)

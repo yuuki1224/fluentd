@@ -15,6 +15,7 @@
 #
 
 require 'fluent/plugin/buffer/chunk'
+require 'fluent/unique_id'
 
 module Fluent
   module Plugin
@@ -152,13 +153,13 @@ module Fluent
           prefix = path[0...pos]
           suffix = path[(pos+3)..-1]
 
-          chunk_id = unique_id_hex(unique_id)
+          chunk_id = Fluent::UniqueId.hex(unique_id)
           state = 'b'
           "#{prefix}.#{state}#{chunk_id}.#{suffix}"
         end
 
         def self.generate_queued_chunk_path(path, unique_id)
-          chunk_id = unique_id_hex(unique_id)
+          chunk_id = Fluent::UniqueId.hex(unique_id)
           if pos = path.index(".b#{chunk_id}.")
             path.sub(".b#{chunk_id}.", ".q#{chunk_id}.")
           else # for unexpected cases (ex: users rename files while opened by fluentd)

@@ -19,6 +19,7 @@ require 'fluent/log'
 require 'fluent/plugin_id'
 require 'fluent/plugin_helper'
 require 'fluent/timezone'
+require 'fluent/unique_id'
 
 require 'time'
 require 'monitor'
@@ -29,6 +30,7 @@ module Fluent
       include PluginId
       include PluginLoggerMixin
       include PluginHelper::Mixin
+      include UniqueId::Mixin
 
       helpers :thread, :retry_state
 
@@ -117,7 +119,11 @@ module Fluent
 
       # Internal states
       FlushThreadState = Struct.new(:thread, :next_time)
-      DequeuedChunkInfo = Struct.new(:chunk_id, :time)
+      DequeuedChunkInfo = Struct.new(:chunk_id, :time, :timeout) do
+        def expired?
+          time + timeout < Time.now
+        end
+      end
 
       attr_reader :num_errors, :emit_count, :emit_records, :write_count, :rollback_count
 
@@ -481,29 +487,45 @@ module Fluent
       def commit_write(chunk_id)
         if @delayed_commit
           @dequeued_chunks_mutex.synchronize do
-            @dequeued_chunks.delete_if { |info| info.chunk_id == chunk_id }
+            @dequeued_chunks.delete_if{ |info| info.chunk_id == chunk_id }
           end
         end
         @buffer.purge_chunk(chunk_id)
 
         @retry_mutex.synchronize do
           if @retry # success to flush chunks in retries
-            log.warn "retry succeeded.", plugin_id: plugin_id, chunk_id: chunk_id
+            log.warn "retry succeeded.", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(chunk_id)
             @retry = nil
             @counters_monitor.synchronize{ @num_errors = 0 }
           end
         end
       end
 
+      def rollback_write(chunk_id)
+        # This API is to rollback chunks explicitly from plugins.
+        # 3rd party plugins can depend it on automatic rollback of #try_rollback_write
+        @dequeued_chunks_mutex.synchronize do
+          @dequeued_chunks.delete_if{ |info| info.chunk_id == chunk_id }
+        end
+        # returns true if chunk was rollbacked as expected
+        #         false if chunk was already flushed and couldn't be rollbacked unexpectedly
+        # in many cases, false can be just ignored
+        if @buffer.takeback_chunk(chunk_id)
+          @counters_monitor.synchronize{ @rollback_count += 1 }
+          true
+        else
+          false
+        end
+      end
+
       def try_rollback_write
         now = Time.now
         @dequeued_chunks_mutex.synchronize do
-          while @dequeued_chunks.first && @dequeued_chunks.first.time + @buffer_config.delayed_commit_timeout < now
+          while @dequeued_chunks.first && @dequeued_chunks.first.expired?
             info = @dequeued_chunks.shift
             if @buffer.takeback_chunk(info.chunk_id)
-              # TODO: @rollback_count
-              log.warn "failed to flush chunk, timeout to commit.", plugin_id: plugin_id, chunk_id: info.chunk_id, flushed_at: info.time
-              log.warn_backtrace e.backtrace
+              @counters_monitor.synchronize{ @rollback_count += 1 }
+              log.warn "failed to flush chunk, timeout to commit.", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(info.chunk_id), flushed_at: info.time
             end
           end
         end
@@ -514,8 +536,8 @@ module Fluent
           until @dequeued_chunks.empty?
             info = @dequeued_chunks.shift
             if @buffer.takeback_chunk(info.chunk_id)
-              # TODO: @rollback_count
-              log.info "delayed commit for buffer chunk was cancelled in shutdown", plugin_id: plugin_id, chunk_id: info.chunk_id
+              @counters_monitor.synchronize{ @rollback_count += 1 }
+              log.info "delayed commit for buffer chunk was cancelled in shutdown", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(info.chunk_id)
             end
           end
         end
@@ -547,7 +569,7 @@ module Fluent
             output.try_write(chunk)
             @counters_monitor.synchronize{ @write_count += 1 }
             @dequeued_chunks_mutex.synchronize do
-              @dequeued_chunks << DequeuedChunkInfo.new(chunk.unique_id, Time.now)
+              @dequeued_chunks << DequeuedChunkInfo.new(chunk.unique_id, Time.now, @buffer_config.delayed_commit_timeout)
             end
           else # output plugin without delayed purge
             chunk_id = chunk.unique_id
@@ -718,7 +740,7 @@ module Fluent
               state.next_time = Process.clock_gettime(clock_id) + interval
             end
 
-            if @delayed_commit && @dequeued_chunks_mutex.synchronize{ !@dequeued_chunks.empty? }
+            if @delayed_commit && @dequeued_chunks_mutex.synchronize{ !@dequeued_chunks.empty? && @dequeued_chunks.first.expired? }
               unless @output_flush_interrupted
                 try_rollback_write
               end

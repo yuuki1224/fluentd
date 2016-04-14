@@ -16,6 +16,7 @@
 
 require 'fluent/plugin/base'
 require 'fluent/plugin/owned_by_mixin'
+require 'fluent/unique_id'
 
 require 'monitor'
 
@@ -23,6 +24,7 @@ module Fluent
   module Plugin
     class Buffer < Base
       include OwnedByMixin
+      include UniqueId::Mixin
       include MonitorMixin
 
       class BufferError < StandardError; end
@@ -283,7 +285,7 @@ module Fluent
             chunk.purge
             @queue_size -= size
           rescue => e
-            log.error "failed to purge buffer chunk", chunk_id: chunk_id, error_class: e.class, error: e
+            log.error "failed to purge buffer chunk", chunk_id: dump_unique_id_hex(chunk_id), error_class: e.class, error: e
           end
 
           if metadata && !@stage[metadata] && (!@queued_num[metadata] || @queued_num[metadata] < 1)
@@ -298,7 +300,7 @@ module Fluent
           until @queue.empty?
             begin
               q = @queue.shift
-              log.debug("purging a chunk in queue"){ {id: chunk.unique_id, size: chunk.size, records: chunk.records} }
+              log.debug("purging a chunk in queue"){ {id: dump_unique_id_hex(chunk.unique_id), size: chunk.size, records: chunk.records} }
               q.purge
             rescue => e
               log.error "unexpected error while clearing buffer queue", error_class: e.class, error: e
