@@ -80,6 +80,8 @@ module Fluent
         config_param :retry_wait, :time, default: 1, desc: 'Seconds to wait before next retry to flush, or constant factor of exponential backoff.'
         config_param :retry_backoff_base, :float, default: 2, desc: 'The base number of exponencial backoff for retries.'
         config_param :retry_max_interval, :time, default: nil, desc: 'The maximum interval seconds for exponencial backoff between retries while failing.'
+
+        config_param :retry_randomize, :bool, default: true, desc: 'If true, output plugin will retry after randomized interval not to do burst retries.'
       end
 
       config_section :secondary, param_name: :secondary_config, required: false, multi: false, final: true do
@@ -566,18 +568,21 @@ module Fluent
 
         begin
           if @delayed_commit && output.implement?(:delayed_commit) # output may be secondary, and secondary plugin may not support delayed commit
-            output.try_write(chunk)
             @counters_monitor.synchronize{ @write_count += 1 }
+            output.try_write(chunk)
             @dequeued_chunks_mutex.synchronize do
               @dequeued_chunks << DequeuedChunkInfo.new(chunk.unique_id, Time.now, @buffer_config.delayed_commit_timeout)
             end
           else # output plugin without delayed purge
             chunk_id = chunk.unique_id
-            output.write(chunk)
             @counters_monitor.synchronize{ @write_count += 1 }
+            output.write(chunk)
             commit_write(chunk_id)
           end
         rescue => e
+          log.debug "taking back chunk for errors.", plugin_id: plugin_id, chunk: dump_unique_id_hex(chunk.unique_id)
+          @buffer.takeback_chunk(chunk.unique_id)
+
           @retry_mutex.synchronize do
             if @retry
               @retry.step
@@ -589,32 +594,34 @@ module Fluent
                 @buffer.clear!
                 @retry = nil
               else
-                log.warn "failed to flush the buffer#{using_secondary ? ' with secondary output' : ''}.", plugin_id: plugin_id, next_retry: @retry.next_time, error_class: e.class, error: e
+                log.warn "failed to flush the buffer#{using_secondary ? ' with secondary output' : ''}.", plugin_id: plugin_id, next_retry: @retry.next_time, chunk: dump_unique_id_hex(chunk.unique_id), error_class: e.class, error: e
                 log.warn_backtrace e.backtrace
               end
             else
-              @retry = retry_state()
+              @retry = retry_state(@buffer_config.retry_randomize)
               @counters_monitor.synchronize{ @num_errors += 1 }
-              log.warn "failed to flush the buffer.", plugin_id: plugin_id, next_retry: @retry.next_time, error_class: e.class, error: e
+              log.warn "failed to flush the buffer.", plugin_id: plugin_id, next_retry: @retry.next_time, chunk: dump_unique_id_hex(chunk.unique_id), error_class: e.class, error: e
               log.warn_backtrace e.backtrace
             end
           end
         end
       end
 
-      def retry_state
+      def retry_state(randomize)
         if @secondary
           retry_state_create(
             :output_retries, @buffer_config.retry_type, @buffer_config.retry_wait, @buffer_config.retry_timeout,
             forever: @buffer_config.retry_forever, max_steps: @buffer_config.retry_max_times, backoff_base: @buffer_config.retry_backoff_base,
             max_interval: @buffer_config.retry_max_interval,
-            secondary: true, secondary_threshold: @buffer_config.retry_secondary_threshold
+            secondary: true, secondary_threshold: @buffer_config.retry_secondary_threshold,
+            randomize: randomize
           )
         else
           retry_state_create(
             :output_retries, @buffer_config.retry_type, @buffer_config.retry_wait, @buffer_config.retry_timeout,
             forever: @buffer_config.retry_forever, max_steps: @buffer_config.retry_max_times, backoff_base: @buffer_config.retry_backoff_base,
-            max_interval: @buffer_config.retry_max_interval
+            max_interval: @buffer_config.retry_max_interval,
+            randomize: randomize
           )
         end
       end
