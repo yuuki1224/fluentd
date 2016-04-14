@@ -33,6 +33,12 @@ module FluentPluginOutputAsBufferedTest
     def try_write(chunk)
       @try_write ? @try_write.call(chunk) : nil
     end
+    def shutdown
+      if @shutdown_hook
+        @shutdown_hook.call
+      end
+      super
+    end
   end
   class DummyFullFeatureOutput < DummyBareOutput
     def prefer_buffered_processing
@@ -56,7 +62,7 @@ module FluentPluginOutputAsBufferedTest
   end
 end
 
-class OutputTest < Test::Unit::TestCase
+class BufferedOutputTest < Test::Unit::TestCase
   def create_output(type=:full)
     case type
     when :bare     then FluentPluginOutputAsBufferedTest::DummyBareOutput.new
@@ -77,7 +83,7 @@ class OutputTest < Test::Unit::TestCase
         yield
       end
     rescue Timeout::Error
-      p @i.log.out.logs
+      STDERR.print *(@i.log.out.logs)
       raise
     end
   end
@@ -731,7 +737,7 @@ class OutputTest < Test::Unit::TestCase
       assert{ @i.buffer.stage.size == 0 }
 
       waiting(4) do
-        Thread.pass until @i.write_count > 1
+        Thread.pass until @i.write_count > 2
       end
 
       assert{ @i.buffer.stage.size == 0 && @i.write_count == 3 }
@@ -1038,46 +1044,469 @@ class OutputTest < Test::Unit::TestCase
   end
 
   sub_test_case 'buffered output feature with many keys' do
-    test 'default flush mode is set to :fast if keys does not include time'
-    test 'default flush mode is set to :none if keys includes time'
+    test 'default flush mode is set to :fast if keys does not include time' do
+      chunk_key = 'name,service,tag'
+      hash = {
+        'flush_interval' => 10,
+        'flush_threads' => 1,
+        'flush_burst_interval' => 0.1,
+        'chunk_bytes_limit' => 1024,
+      }
+      @i = create_output(:buffered)
+      @i.configure(config_element('ROOT','',{},[config_element('buffer',chunk_key,hash)]))
+      @i.start
+
+      assert_equal :fast, @i.instance_eval{ @flush_mode }
+    end
+
+    test 'default flush mode is set to :none if keys includes time' do
+      chunk_key = 'name,service,tag,time'
+      hash = {
+        'timekey_range' => 60,
+        'flush_interval' => 10,
+        'flush_threads' => 1,
+        'flush_burst_interval' => 0.1,
+        'chunk_bytes_limit' => 1024,
+      }
+      @i = create_output(:buffered)
+      @i.configure(config_element('ROOT','',{},[config_element('buffer',chunk_key,hash)]))
+      @i.start
+
+      assert_equal :none, @i.instance_eval{ @flush_mode }
+    end
   end
 
   sub_test_case 'buffered output feature with delayed commit' do
-    test '#format is called for each event streams'
-    test '#try_write is called per flush, buffer chunk is not purged'
-    test 'buffer chunk is purged when plugin calls #commit_write'
-    test '#try_rollback_write can rollback buffer chunks for delayed commit after timeout'
-    test '#try_rollback_all will be called for all waiting chunks when shutdown'
-  end
+    setup do
+      chunk_key = 'tag'
+      hash = {
+        'flush_interval' => 10,
+        'flush_threads' => 1,
+        'flush_burst_interval' => 0.1,
+        'delayed_commit_timeout' => 30,
+        'chunk_bytes_limit' => 1024,
+      }
+      @i = create_output(:delayed)
+      @i.configure(config_element('ROOT','',{},[config_element('buffer',chunk_key,hash)]))
+      @i.start
+    end
 
-  sub_test_case 'buffered output for retries with exponential backoff' do
-    test 'exponential backoff is default strategy for retries'
-    test 'max retry interval is limited by retry_max_interval'
-    test 'retry_timeout can limit total time for retries'
-    test 'retry_max_times can limit maximum times for retries'
-  end
+    test '#format is called for each event streams' do
+      ary = []
+      @i.register(:format){|tag, time, record| ary << [tag, time, record]; '' }
 
-  sub_test_case 'bufferd output for retries with periodical retry' do
-    test 'periodical retries should retry to write in failing status per retry_wait'
-    test 'retry_timeout can limit total time for retries'
-    test 'retry_max_times can limit maximum times for retries'
-  end
+      t = event_time()
+      es = [
+        [t, {"key" => "value1", "name" => "moris", "service" => "a"}],
+        [t, {"key" => "value2", "name" => "moris", "service" => "b"}],
+      ]
 
-  sub_test_case 'buffered output configured as retry_forever' do
-    test 'configuration error will be raised if secondary section is configured'
-    test 'retry_timeout and retry_max_times will be ignored if retry_forever is true for exponential backoff'
-    test 'retry_timeout and retry_max_times will be ignored if retry_forever is true for periodical retries'
-  end
+      5.times do
+        @i.emit('tag.test', es)
+      end
 
-  sub_test_case 'secondary plugin feature for buffered output with periodical retry' do
-    test 'raises configuration error if <buffer> section is specified in <secondary> section'
-    test 'warns if secondary plugin is different type from primary one'
-    test 'primary plugin will emit event streams to secondary after retries for time of retry_timeout * retry_secondary_threshold'
-    test 'exponential backoff interval will be initialized when switched to secondary'
-  end
+      assert_equal 10, ary.size
+      5.times do |i|
+        assert_equal ["tag.test", t, {"key" => "value1", "name" => "moris", "service" => "a"}], ary[i*2]
+        assert_equal ["tag.test", t, {"key" => "value2", "name" => "moris", "service" => "b"}], ary[i*2+1]
+      end
+    end
 
-  sub_test_case 'secondary plugin feature for buffered output with exponential backoff' do
-    test 'primary plugin will emit event streams to secondary after retries for time of retry_timeout * retry_secondary_threshold'
-    test 'retry_wait for secondary is same with one for primary'
+    test '#try_write is called per flush, buffer chunk is not purged until #commit_write is called' do
+      Timecop.freeze( Time.parse('2016-04-13 14:04:01 +0900') )
+
+      ary = []
+      metachecks = []
+      chunks = []
+
+      @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
+      @i.register(:try_write) do |chunk|
+        chunks << chunk
+        chunk.read.split("\n").reject{|l| l.empty? }.each do |data|
+          e = JSON.parse(data)
+          ary << e
+          metachecks << (e[0] == chunk.metadata.tag)
+        end
+      end
+
+      @i.thread_wait_until_start
+
+      # size of a event is 195
+      dummy_data = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      events = [
+        ["test.tag.1", event_time('2016-04-13 14:03:21 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.2", event_time('2016-04-13 14:03:23 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:29 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:30 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:33 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:38 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:43 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:49 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}],
+        ["test.tag.2", event_time('2016-04-13 14:03:51 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:04:00 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.2", event_time('2016-04-13 14:04:01 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}],
+      ]
+
+      assert_equal 0, @i.write_count
+
+      @i.interrupt_flushes
+
+      events.shuffle.each do |tag, time, record|
+        @i.emit(tag, [ [time, record] ])
+      end
+      assert{ @i.buffer.stage.size == 2 }
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:02 +0900') )
+
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 0
+      end
+
+      assert{ @i.buffer.stage.size == 2 }
+      assert{ @i.write_count == 1 }
+      assert{ @i.buffer.queue.size == 0 }
+      assert{ @i.buffer.dequeued.size == 1 }
+
+      # events fulfills a chunk (and queued immediately)
+      assert_equal 5, ary.size
+      assert_equal 5, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 0, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      assert_equal 1, chunks.size
+      assert !chunks.first.empty?
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:09 +0900') )
+
+      @i.enqueue_thread_wait
+
+      assert{ @i.buffer.stage.size == 2 }
+
+      # to trigger try_flush with flush_burst_interval
+      Timecop.freeze( Time.parse('2016-04-13 14:04:11 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:12 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:13 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:14 +0900') )
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      assert{ @i.buffer.stage.size == 0 }
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 1
+      end
+
+      assert{ @i.buffer.stage.size == 0 && @i.write_count == 3 }
+      assert{ @i.buffer.dequeued.size == 3 }
+
+      assert_equal 11, ary.size
+      assert_equal 8, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 3, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      assert_equal 3, chunks.size
+      assert chunks.all?{|c| !c.empty? }
+
+      assert metachecks.all?{|e| e }
+
+      @i.commit_write(chunks[0].unique_id)
+      assert{ @i.buffer.dequeued.size == 2 }
+      assert chunks[0].empty?
+
+      @i.commit_write(chunks[1].unique_id)
+      assert{ @i.buffer.dequeued.size == 1 }
+      assert chunks[1].empty?
+
+      @i.commit_write(chunks[2].unique_id)
+      assert{ @i.buffer.dequeued.size == 0 }
+      assert chunks[2].empty?
+
+      # no problem to commit chunks already committed
+      assert_nothing_raised do
+        @i.commit_write(chunks[2].unique_id)
+      end
+    end
+
+    test '#rollback_write and #try_rollback_write can rollback buffer chunks for delayed commit after timeout, and then be able to write it again' do
+      Timecop.freeze( Time.parse('2016-04-13 14:04:01 +0900') )
+
+      ary = []
+      metachecks = []
+      chunks = []
+
+      @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
+      @i.register(:try_write) do |chunk|
+        chunks << chunk
+        chunk.read.split("\n").reject{|l| l.empty? }.each do |data|
+          e = JSON.parse(data)
+          ary << e
+          metachecks << (e[0] == chunk.metadata.tag)
+        end
+      end
+
+      @i.thread_wait_until_start
+
+      # size of a event is 195
+      dummy_data = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      events = [
+        ["test.tag.1", event_time('2016-04-13 14:03:21 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.2", event_time('2016-04-13 14:03:23 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:29 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:30 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:33 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:38 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:43 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:49 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}],
+        ["test.tag.2", event_time('2016-04-13 14:03:51 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:04:00 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.2", event_time('2016-04-13 14:04:01 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}],
+      ]
+
+      assert_equal 0, @i.write_count
+
+      @i.interrupt_flushes
+
+      events.shuffle.each do |tag, time, record|
+        @i.emit(tag, [ [time, record] ])
+      end
+      assert{ @i.buffer.stage.size == 2 }
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:02 +0900') )
+
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 0
+      end
+
+      assert{ @i.buffer.stage.size == 2 }
+      assert{ @i.write_count == 1 }
+      assert{ @i.buffer.queue.size == 0 }
+      assert{ @i.buffer.dequeued.size == 1 }
+
+      # events fulfills a chunk (and queued immediately)
+      assert_equal 5, ary.size
+      assert_equal 5, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 0, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      assert_equal 1, chunks.size
+      assert !chunks.first.empty?
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:09 +0900') )
+
+      @i.enqueue_thread_wait
+
+      assert{ @i.buffer.stage.size == 2 }
+
+      # to trigger try_flush with flush_burst_interval
+      Timecop.freeze( Time.parse('2016-04-13 14:04:11 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:12 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:13 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:14 +0900') )
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      assert{ @i.buffer.stage.size == 0 }
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 2
+      end
+
+      assert{ @i.buffer.stage.size == 0 && @i.write_count == 3 }
+      assert{ @i.buffer.dequeued.size == 3 }
+
+      assert_equal 11, ary.size
+      assert_equal 8, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 3, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      assert_equal 3, chunks.size
+      assert chunks.all?{|c| !c.empty? }
+
+      assert metachecks.all?{|e| e }
+
+      @i.interrupt_flushes
+
+      @i.rollback_write(chunks[2].unique_id)
+
+      assert{ @i.buffer.dequeued.size == 2 }
+      assert{ @i.buffer.queue.size == 1 && @i.buffer.queue.first.unique_id == chunks[2].unique_id }
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:15 +0900') )
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 3
+      end
+
+      assert{ @i.write_count == 4 }
+      assert{ @i.rollback_count == 1 }
+      assert{ @i.instance_eval{ @dequeued_chunks.size } == 3 }
+      assert{ @i.buffer.dequeued.size == 3 }
+      assert{ @i.buffer.queue.size == 0 }
+
+      assert_equal 4, chunks.size
+      assert chunks[2].unique_id == chunks[3].unique_id
+
+      ary.reject!{|e| true }
+      chunks.reject!{|e| true }
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:46 +0900') )
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      waiting(4) do
+        Thread.pass until @i.rollback_count == 4
+      end
+
+      assert{ chunks[0...3].all?{|c| !c.empty? } }
+
+      # rollback is in progress, but some may be flushed again after rollback
+      Timecop.freeze( Time.parse('2016-04-13 14:04:46 +0900') )
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      waiting(4) do
+        Thread.pass until @i.write_count == 7
+      end
+
+      assert{ @i.write_count == 7 }
+      assert_equal 11, ary.size
+      assert_equal 8, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 3, ary.select{|e| e[0] == "test.tag.2" }.size
+      assert{ chunks.size == 3 }
+      assert{ chunks.all?{|c| !c.empty? } }
+
+      chunks.each{|c| @i.commit_write(c.unique_id) }
+      assert{ chunks.all?{|c| c.empty? } }
+
+      assert{ @i.buffer.dequeued.size == 0 }
+    end
+
+    test '#try_rollback_all will be called for all waiting chunks after shutdown' do
+      Timecop.freeze( Time.parse('2016-04-13 14:04:01 +0900') )
+
+      ary = []
+      metachecks = []
+      chunks = []
+
+      @i.register(:format){|tag,time,record| [tag,time,record].to_json + "\n" }
+      @i.register(:try_write) do |chunk|
+        chunks << chunk
+        chunk.read.split("\n").reject{|l| l.empty? }.each do |data|
+          e = JSON.parse(data)
+          ary << e
+          metachecks << (e[0] == chunk.metadata.tag)
+        end
+      end
+
+      @i.thread_wait_until_start
+
+      # size of a event is 195
+      dummy_data = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      events = [
+        ["test.tag.1", event_time('2016-04-13 14:03:21 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.2", event_time('2016-04-13 14:03:23 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:29 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:30 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:33 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:38 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:43 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:03:49 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "b"}],
+        ["test.tag.2", event_time('2016-04-13 14:03:51 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}],
+        ["test.tag.1", event_time('2016-04-13 14:04:00 +0900'), {"data" => dummy_data, "name" => "xxx", "service" => "a"}],
+        ["test.tag.2", event_time('2016-04-13 14:04:01 +0900'), {"data" => dummy_data, "name" => "yyy", "service" => "a"}],
+      ]
+
+      assert_equal 0, @i.write_count
+
+      @i.interrupt_flushes
+
+      events.shuffle.each do |tag, time, record|
+        @i.emit(tag, [ [time, record] ])
+      end
+      assert{ @i.buffer.stage.size == 2 }
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:02 +0900') )
+
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 0
+      end
+
+      assert{ @i.buffer.stage.size == 2 }
+      assert{ @i.write_count == 1 }
+      assert{ @i.buffer.queue.size == 0 }
+      assert{ @i.buffer.dequeued.size == 1 }
+
+      # events fulfills a chunk (and queued immediately)
+      assert_equal 5, ary.size
+      assert_equal 5, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 0, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      assert_equal 1, chunks.size
+      assert !chunks.first.empty?
+
+      Timecop.freeze( Time.parse('2016-04-13 14:04:09 +0900') )
+
+      @i.enqueue_thread_wait
+
+      assert{ @i.buffer.stage.size == 2 }
+
+      # to trigger try_flush with flush_burst_interval
+      Timecop.freeze( Time.parse('2016-04-13 14:04:11 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:12 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:13 +0900') )
+      @i.enqueue_thread_wait
+      Timecop.freeze( Time.parse('2016-04-13 14:04:14 +0900') )
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+
+      assert{ @i.buffer.stage.size == 0 }
+
+      waiting(4) do
+        Thread.pass until @i.write_count > 2
+      end
+
+      assert{ @i.buffer.stage.size == 0 }
+      assert{ @i.buffer.queue.size == 0 }
+      assert{ @i.buffer.dequeued.size == 3 }
+      assert{ @i.write_count == 3 }
+      assert{ @i.rollback_count == 0 }
+
+      assert_equal 11, ary.size
+      assert_equal 8, ary.select{|e| e[0] == "test.tag.1" }.size
+      assert_equal 3, ary.select{|e| e[0] == "test.tag.2" }.size
+
+      assert{ chunks.size == 3 }
+      assert{ chunks.all?{|c| !c.empty? } }
+
+      @i.register(:shutdown_hook){ @i.commit_write(chunks[1].unique_id) }
+
+      @i.stop
+      @i.before_shutdown
+      @i.shutdown
+
+      assert{ @i.buffer.dequeued.size == 2 }
+      assert{ !chunks[0].empty? }
+      assert{ chunks[1].empty? }
+      assert{ !chunks[2].empty? }
+
+      @i.after_shutdown
+
+      assert{ @i.rollback_count == 2 }
+    end
   end
 end
