@@ -99,7 +99,7 @@ class BufferFileChunkTest < Test::Unit::TestCase
     end
 
     def gen_chunk_path(prefix, unique_id)
-      File.join(@chunkdir, "test.#{prefix}#{Fluent::Plugin::Buffer::Chunk.unique_id_hex(unique_id)}.log")
+      File.join(@chunkdir, "test.#{prefix}#{Fluent::Plugin::UniqueId.hex(unique_id)}.log")
     end
 
     teardown do
