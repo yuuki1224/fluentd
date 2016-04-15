@@ -21,7 +21,7 @@ class UniqueIdTest < Test::Unit::TestCase
 
     test '.hex dumps 16bytes id into 32 chars' do
       assert_equal 32, Fluent::UniqueId.hex(Fluent::UniqueId.generate).size
-      assert{ Fluent::UniqueId.hex(Fluent::UniqueId.generate) =~ /^[0-9a-z]{32}$/ }
+      assert(Fluent::UniqueId.hex(Fluent::UniqueId.generate) =~ /^[0-9a-z]{32}$/)
     end
   end
 
@@ -41,7 +41,7 @@ class UniqueIdTest < Test::Unit::TestCase
 
     test '#dump_unique_id_hex dumps 16bytes id into 32 chars' do
       assert_equal 32, @i.dump_unique_id_hex(@i.generate_unique_id).size
-      assert{ @i.dump_unique_id_hex(@i.generate_unique_id) =~ /^[0-9a-z]{32}$/ }
+      assert(@i.dump_unique_id_hex(@i.generate_unique_id) =~ /^[0-9a-z]{32}$/)
     end
   end
 end
