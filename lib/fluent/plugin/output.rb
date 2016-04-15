@@ -362,7 +362,7 @@ module Fluent
 
       def after_shutdown
         super
-        try_rollback_all unless @as_secondary # rollback regardless with @delayed_commit, because secondary may do it
+        try_rollback_all if @buffering && !@as_secondary # rollback regardless with @delayed_commit, because secondary may do it
         @secondary.after_shutdown if @secondary
 
         if @buffering && @buffer
@@ -581,6 +581,7 @@ module Fluent
       end
 
       def try_rollback_all
+        return unless @dequeued_chunks
         @dequeued_chunks_mutex.synchronize do
           until @dequeued_chunks.empty?
             info = @dequeued_chunks.shift
