@@ -66,7 +66,7 @@ module Fluent
         # 72hours == 17 times with exponential backoff (not to change default behavior)
         config_param :retry_max_times, :integer, default: nil, desc: 'The maximum number of times to retry to flush while failing.'
 
-        config_param :retry_secondary_threshold, :integer, default: 80, desc: 'Percentage of retry_timeout to switch to use secondary while failing.'
+        config_param :retry_secondary_threshold, :float, default: 0.8, desc: 'ratio of retry_timeout to switch to use secondary while failing.'
         # expornential backoff sequence will be initialized at the time of this threshold
 
         desc 'How to wait next retry to flush buffer.'
@@ -89,6 +89,9 @@ module Fluent
         config_section :buffer, required: false, multi: false do
           # dummy to detect invalid specification for here
         end
+        config_section :secondary, required: false, multi: false do
+          # dummy to detect invalid specification for here
+        end
       end
 
       def process(tag, es)
@@ -106,6 +109,8 @@ module Fluent
       def try_write(chunk)
         raise NotImplementedError, "BUG: output plugins MUST implement this method"
       end
+
+      # TODO: add a way to do rollback_chunk + mark_as_failure, and rollback_chunk_automatically + mark_as_failure (by conf)
 
       def prefer_buffered_processing
         # override this method to return false only when all of these are true:
@@ -127,16 +132,29 @@ module Fluent
         end
       end
 
+      attr_reader :as_secondary, :delayed_commit, :delayed_commit_timeout
       attr_reader :num_errors, :emit_count, :emit_records, :write_count, :rollback_count
 
       # for tests
-      attr_reader :buffer, :chunk_keys, :chunk_key_time, :chunk_key_tag
+      attr_reader :buffer, :retry, :secondary, :chunk_keys, :chunk_key_time, :chunk_key_tag
       attr_accessor :output_enqueue_thread_waiting
 
       def initialize
         super
         @buffering = false
         @delayed_commit = false
+        @as_secondary = false
+        @primary_instance = nil
+      end
+
+      def acts_as_secondary(primary)
+        @as_secondary = true
+        @primary_instance = primary
+        (class << self; self; end).module_eval do
+          define_method(:extract_placeholders){ |str, metadata| @primary_instance.extract_placeholders(str, metadata) }
+          define_method(:commit_write){ |chunk_id| @primary_instance.commit_write(chunk_id, delayed: delayed_commit, secondary: true) }
+          define_method(:rollback_write){ |chunk_id| @primary_instance.rollback_write(chunk_id) }
+        end
       end
 
       def configure(conf)
@@ -156,17 +174,31 @@ module Fluent
         else # no buffer sections
           if implement?(:synchronous)
             if !implement?(:buffered) && !implement?(:delayed_commit)
+              if @as_secondary
+                raise Fluent::ConfigError, "secondary plugin '#{self.class}' must support buffering, but doesn't."
+              end
               @buffering = false
             else
-              # @buffering.nil? shows that enabling buffering or not will be decided in lazy way in #start
-              @buffering = nil
+              if @as_secondary
+                # secondary plugin always works as buffered plugin without buffer instance
+                @buffering = true
+              else
+                # @buffering.nil? shows that enabling buffering or not will be decided in lazy way in #start
+                @buffering = nil
+              end
             end
           else # buffered or delayed_commit is supported by `unless` of first line in this method
             @buffering = true
           end
         end
 
-        if @buffering || @buffering.nil?
+        if @as_secondary
+          if !@buffering && !@buffering.nil?
+            raise Fluent::ConfigError, "secondary plugin '#{self.class}' must support buffering, but doesn't"
+          end
+        end
+
+        if (@buffering || @buffering.nil?) && !@as_secondary
           # When @buffering.nil?, @buffer_config was initialized with default value for all parameters.
           # If so, this configuration MUST success.
           @chunk_keys = @buffer_config.chunk_keys
@@ -210,11 +242,13 @@ module Fluent
         if @secondary_config
           raise Fluent::ConfigError, "Invalid <secondary> section for non-buffered plugin" unless @buffering
           raise Fluent::ConfigError, "<secondary> section cannot have <buffer> section" if @secondary_config.buffer
+          raise Fluent::ConfigError, "<secondary> section cannot have <secondary> section" if @secondary_config.secondary
           raise Fluent::ConfigError, "<secondary> section and 'retry_forever' are exclusive" if @buffer_config.retry_forever
 
           secondary_type = @secondary_config[:@type]
           secondary_conf = conf.elements.select{|e| e.name == 'secondary' }.first
           @secondary = Plugin.new_output(secondary_type)
+          @secondary.acts_as_secondary(self)
           @secondary.configure(secondary_conf)
           @secondary.router = router if @secondary.has_router?
           if self.class != @secondary.class
@@ -239,7 +273,7 @@ module Fluent
 
         if @buffering.nil?
           @buffering = prefer_buffered_processing
-          unless @buffering
+          if !@buffering && @buffer
             @buffer.terminate # it's not started, so terminate will be enough
           end
         end
@@ -255,7 +289,15 @@ module Fluent
                             else
                               implement?(:delayed_commit)
                             end
+          @delayed_commit_timeout = @buffer_config.delayed_commit_timeout
+        else # !@buffered
+          m = method(:emit_sync)
+          (class << self; self; end).module_eval do
+            define_method(:emit, m)
+          end
+        end
 
+        if @buffering && !@as_secondary
           @retry = nil
           @retry_mutex = Mutex.new
 
@@ -290,23 +332,21 @@ module Fluent
           if @flush_mode == :fast || @chunk_key_time
             thread_create(:enqueue_thread, &method(:enqueue_thread_run))
           end
-        else # !@buffered
-          m = method(:emit_sync)
-          (class << self; self; end).module_eval do
-            define_method(:emit, m)
-          end
         end
+        @secondary.start if @secondary
       end
 
       def stop
         super
-        @buffer.stop if @buffering
+        @secondary.stop if @secondary
+        @buffer.stop if @buffering && @buffer
       end
 
       def before_shutdown
         super
+        @secondary.before_shutdown if @secondary
 
-        if @buffering
+        if @buffering && @buffer
           if @flush_at_shutdown
             force_flush
           end
@@ -316,14 +356,16 @@ module Fluent
 
       def shutdown
         super
-        @buffer.shutdown if @buffering
+        @secondary.shutdown if @secondary
+        @buffer.shutdown if @buffering && @buffer
       end
 
       def after_shutdown
         super
-        try_rollback_all if @delayed_commit # for delayed chunks
+        try_rollback_all unless @as_secondary # rollback regardless with @delayed_commit, because secondary may do it
+        @secondary.after_shutdown if @secondary
 
-        if @buffering
+        if @buffering && @buffer
           @buffer.after_shutdown
 
           @output_flush_threads_running = false
@@ -338,12 +380,14 @@ module Fluent
 
       def close
         super
-        @buffer.close if @buffering
+        @buffer.close if @buffering && @buffer
+        @secondary.close if @secondary
       end
 
       def terminate
         super
-        @buffer.terminate if @buffering
+        @buffer.terminate if @buffering && @buffer
+        @secondary.terminate if @secondary
       end
 
       def support_in_v12_style?(feature)
@@ -486,8 +530,8 @@ module Fluent
         meta_and_data.keys
       end
 
-      def commit_write(chunk_id)
-        if @delayed_commit
+      def commit_write(chunk_id, delayed: @delayed_commit, secondary: false)
+        if delayed
           @dequeued_chunks_mutex.synchronize do
             @dequeued_chunks.delete_if{ |info| info.chunk_id == chunk_id }
           end
@@ -496,9 +540,12 @@ module Fluent
 
         @retry_mutex.synchronize do
           if @retry # success to flush chunks in retries
-            log.warn "retry succeeded.", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(chunk_id)
+            if secondary
+              log.warn "retry succeeded by secondary.", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(chunk_id)
+            else
+              log.warn "retry succeeded.", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(chunk_id)
+            end
             @retry = nil
-            @counters_monitor.synchronize{ @num_errors = 0 }
           end
         end
       end
@@ -527,7 +574,7 @@ module Fluent
             info = @dequeued_chunks.shift
             if @buffer.takeback_chunk(info.chunk_id)
               @counters_monitor.synchronize{ @rollback_count += 1 }
-              log.warn "failed to flush chunk, timeout to commit.", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(info.chunk_id), flushed_at: info.time
+              log.warn "failed to flush the buffer chunk, timeout to commit.", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(info.chunk_id), flushed_at: info.time
             end
           end
         end
@@ -539,7 +586,7 @@ module Fluent
             info = @dequeued_chunks.shift
             if @buffer.takeback_chunk(info.chunk_id)
               @counters_monitor.synchronize{ @rollback_count += 1 }
-              log.info "delayed commit for buffer chunk was cancelled in shutdown", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(info.chunk_id)
+              log.info "delayed commit for buffer chunks was cancelled in shutdown", plugin_id: plugin_id, chunk_id: dump_unique_id_hex(info.chunk_id)
             end
           end
         end
@@ -567,17 +614,18 @@ module Fluent
         end
 
         begin
-          if @delayed_commit && output.implement?(:delayed_commit) # output may be secondary, and secondary plugin may not support delayed commit
+          if output.delayed_commit
             @counters_monitor.synchronize{ @write_count += 1 }
             output.try_write(chunk)
             @dequeued_chunks_mutex.synchronize do
-              @dequeued_chunks << DequeuedChunkInfo.new(chunk.unique_id, Time.now, @buffer_config.delayed_commit_timeout)
+              # delayed_commit_timeout for secondary is configured in <buffer> of primary (<secondary> don't get <buffer>)
+              @dequeued_chunks << DequeuedChunkInfo.new(chunk.unique_id, Time.now, self.delayed_commit_timeout)
             end
           else # output plugin without delayed purge
             chunk_id = chunk.unique_id
             @counters_monitor.synchronize{ @write_count += 1 }
             output.write(chunk)
-            commit_write(chunk_id)
+            commit_write(chunk_id, secondary: using_secondary)
           end
         rescue => e
           log.debug "taking back chunk for errors.", plugin_id: plugin_id, chunk: dump_unique_id_hex(chunk.unique_id)
@@ -750,10 +798,12 @@ module Fluent
               try_flush
               # next_flush_interval uses flush_thread_interval or flush_burst_interval (or retrying)
               interval = next_flush_time.to_f - Time.now.to_f
+              # TODO: if secondary && delayed-commit, next_flush_time will be much longer than expected (because @retry still exists)
+              #   @retry should be cleard if delayed commit is enabled? Or any other solution?
               state.next_time = Process.clock_gettime(clock_id) + interval
             end
 
-            if @delayed_commit && @dequeued_chunks_mutex.synchronize{ !@dequeued_chunks.empty? && @dequeued_chunks.first.expired? }
+            if @dequeued_chunks_mutex.synchronize{ !@dequeued_chunks.empty? && @dequeued_chunks.first.expired? }
               unless @output_flush_interrupted
                 try_rollback_write
               end
