@@ -23,7 +23,7 @@ module Fluent
     end
 
     def self.hex(unique_id)
-      unique_id.unpack('N*').map{|n| s = n.to_s(16); ("0" * (8 - s.size) + s) }.join
+      unique_id.unpack('H*').first
     end
 
     module Mixin
