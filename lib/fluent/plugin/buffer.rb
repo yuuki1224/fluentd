@@ -295,7 +295,7 @@ module Fluent
         nil
       end
 
-      def clear!
+      def clear_queue!
         synchronize do
           until @queue.empty?
             begin

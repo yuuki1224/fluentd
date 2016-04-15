@@ -147,16 +147,16 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
       @i.flush_thread_wakeup
       waiting(4){ Thread.pass until @i.write_count > 0 }
 
-      assert_equal 1, @i.write_count
-      assert_equal 1, @i.num_errors
+      assert{ @i.write_count > 0 }
+      assert{ @i.num_errors > 0 }
 
       now = @i.next_flush_time
       Timecop.freeze( now )
       @i.flush_thread_wakeup
       waiting(4){ Thread.pass until @i.write_count > 1 }
 
-      assert_equal 2, @i.write_count
-      assert_equal 2, @i.num_errors
+      assert{ @i.write_count > 1 }
+      assert{ @i.num_errors > 1 }
     end
 
     test 'max retry interval is limited by retry_max_interval' do
@@ -185,10 +185,10 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
       @i.enqueue_thread_wait
 
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > 0 }
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
 
-      assert_equal 1, @i.write_count
-      assert_equal 1, @i.num_errors
+      assert{ @i.write_count > 0 }
+      assert{ @i.num_errors > 0 }
 
       prev_write_count = @i.write_count
       prev_num_errors = @i.num_errors
@@ -197,10 +197,10 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
         now = @i.next_flush_time
         Timecop.freeze( now )
         @i.flush_thread_wakeup
-        waiting(4){ Thread.pass until @i.write_count > prev_write_count }
+        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
 
-        assert_equal (prev_write_count + 1), @i.write_count
-        assert_equal (prev_num_errors + 1), @i.num_errors
+        assert{ @i.write_count > prev_write_count }
+        assert{ @i.num_errors > prev_num_errors }
 
         prev_write_count = @i.write_count
         prev_num_errors = @i.num_errors
@@ -211,18 +211,20 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
     end
 
     test 'output plugin give retries up by retry_timeout, and clear queue in buffer' do
+      written_tags = []
+
       chunk_key = 'tag'
       hash = {
         'flush_interval' => 1,
         'flush_burst_interval' => 0.1,
         'retry_randomize' => false,
-        'retry_max_interval' => 60,
+        'retry_timeout' => 3600,
       }
       @i = create_output()
       @i.configure(config_element('ROOT','',{},[config_element('buffer',chunk_key,hash)]))
       @i.register(:prefer_buffered_processing){ true }
       @i.register(:format){|tag,time,record| [tag,time.to_i,record].to_json + "\n" }
-      @i.register(:write){|chunk| raise "yay, your #write must fail" }
+      @i.register(:write){|chunk| written_tags << chunk.metadata.tag; raise "yay, your #write must fail" }
       @i.start
 
       now = Time.parse('2016-04-13 18:33:30 -0700')
@@ -230,38 +232,173 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       @i.emit("test.tag.1", dummy_event_stream())
 
-      now = Time.parse('2016-04-13 18:33:32 -0700')
+      now = first_failure = Time.parse('2016-04-13 18:33:31 -0700')
       Timecop.freeze( now )
 
+      @i.emit("test.tag.2", dummy_event_stream())
+
+      assert_equal 0, @i.write_count
+      assert_equal 0, @i.num_errors
+
       @i.enqueue_thread_wait
-
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > 0 }
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
 
-      assert_equal 1, @i.write_count
-      assert_equal 1, @i.num_errors
+      assert{ @i.buffer.queue.size > 0 }
+      assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
+
+      assert{ @i.write_count > 0 }
+      assert{ @i.num_errors > 0 }
 
       prev_write_count = @i.write_count
       prev_num_errors = @i.num_errors
 
-      10.times do
+      11.times do |i|
         now = @i.next_flush_time
-        Timecop.freeze( now )
-        @i.flush_thread_wakeup
-        waiting(4){ Thread.pass until @i.write_count > prev_write_count }
+        # p({i: i, now: now, diff: (now - Time.now)})
+        # * if loop count is 12:
+        # {:i=>0, :now=>2016-04-13 18:33:32 -0700, :diff=>1.0}
+        # {:i=>1, :now=>2016-04-13 18:33:34 -0700, :diff=>2.0}
+        # {:i=>2, :now=>2016-04-13 18:33:38 -0700, :diff=>4.0}
+        # {:i=>3, :now=>2016-04-13 18:33:46 -0700, :diff=>8.0}
+        # {:i=>4, :now=>2016-04-13 18:34:02 -0700, :diff=>16.0}
+        # {:i=>5, :now=>2016-04-13 18:34:34 -0700, :diff=>32.0}
+        # {:i=>6, :now=>2016-04-13 18:35:38 -0700, :diff=>64.0}
+        # {:i=>7, :now=>2016-04-13 18:37:46 -0700, :diff=>128.0}
+        # {:i=>8, :now=>2016-04-13 18:42:02 -0700, :diff=>256.0}
+        # {:i=>9, :now=>2016-04-13 18:50:34 -0700, :diff=>512.0}
+        # {:i=>10, :now=>2016-04-13 19:07:38 -0700, :diff=>1024.0}
+        # {:i=>11, :now=>2016-04-13 19:33:31 -0700, :diff=>1553.0} # clear_queue!
 
-        assert_equal (prev_write_count + 1), @i.write_count
-        assert_equal (prev_num_errors + 1), @i.num_errors
+        Timecop.freeze( now )
+        @i.enqueue_thread_wait
+        @i.flush_thread_wakeup
+        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+
+        assert{ @i.write_count > prev_write_count }
+        assert{ @i.num_errors > prev_num_errors }
 
         prev_write_count = @i.write_count
         prev_num_errors = @i.num_errors
       end
-      # expbackoff interval: 1 * 2 ** 10 == 1024
-      # but it should be limited by retry_max_interval=60
-      assert_equal 60, (@i.next_flush_time - now)
+
+      assert{ @i.next_flush_time == first_failure + 3600 }
+
+      assert{ @i.buffer.queue.size == 2 }
+      assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
+      assert{ @i.buffer.stage.size == 0 }
+
+      assert{ written_tags.all?{|t| t == 'test.tag.1' } }
+
+
+      chunks = @i.buffer.queue.dup
+
+      @i.emit("test.tag.3", dummy_event_stream())
+
+      now = @i.next_flush_time
+      Timecop.freeze( now )
+      @i.flush_thread_wakeup
+      waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+
+      logs = @i.log.out.logs
+      assert{ logs.any?{|l| l.start_with?("2016-04-13 19:33:31 -0700 [error]: failed to flush the buffer, and hit limit for retries. dropping all chunks in the buffer queue.") } }
+      assert{ @i.buffer.queue.size == 0 }
+      assert{ @i.buffer.stage.size == 1 }
+      assert{ chunks.all?{|c| c.empty? } }
     end
 
-    test 'output plugin give retries up by retry_max_times, and clear queue in buffer'
+    test 'output plugin give retries up by retry_max_times, and clear queue in buffer' do
+      written_tags = []
+
+      chunk_key = 'tag'
+      hash = {
+        'flush_interval' => 1,
+        'flush_burst_interval' => 0.1,
+        'retry_randomize' => false,
+        'retry_max_times' => 10,
+      }
+      @i = create_output()
+      @i.configure(config_element('ROOT','',{},[config_element('buffer',chunk_key,hash)]))
+      @i.register(:prefer_buffered_processing){ true }
+      @i.register(:format){|tag,time,record| [tag,time.to_i,record].to_json + "\n" }
+      @i.register(:write){|chunk| written_tags << chunk.metadata.tag; raise "yay, your #write must fail" }
+      @i.start
+
+      now = Time.parse('2016-04-13 18:33:30 -0700')
+      Timecop.freeze( now )
+
+      @i.emit("test.tag.1", dummy_event_stream())
+
+      now = first_failure = Time.parse('2016-04-13 18:33:31 -0700')
+      Timecop.freeze( now )
+
+      @i.emit("test.tag.2", dummy_event_stream())
+
+      assert_equal 0, @i.write_count
+      assert_equal 0, @i.num_errors
+
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
+
+      assert{ @i.buffer.queue.size > 0 }
+      assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
+
+      assert{ @i.write_count > 0 }
+      assert{ @i.num_errors > 0 }
+
+      prev_write_count = @i.write_count
+      prev_num_errors = @i.num_errors
+
+      9.times do |i|
+        now = @i.next_flush_time
+        # p({i: i, now: now, diff: (now - Time.now)})
+        # * if loop count is 10:
+        # {:i=>0, :now=>2016-04-13 18:33:32 -0700, :diff=>1.0}
+        # {:i=>1, :now=>2016-04-13 18:33:34 -0700, :diff=>2.0}
+        # {:i=>2, :now=>2016-04-13 18:33:38 -0700, :diff=>4.0}
+        # {:i=>3, :now=>2016-04-13 18:33:46 -0700, :diff=>8.0}
+        # {:i=>4, :now=>2016-04-13 18:34:02 -0700, :diff=>16.0}
+        # {:i=>5, :now=>2016-04-13 18:34:34 -0700, :diff=>32.0}
+        # {:i=>6, :now=>2016-04-13 18:35:38 -0700, :diff=>64.0}
+        # {:i=>7, :now=>2016-04-13 18:37:46 -0700, :diff=>128.0}
+        # {:i=>8, :now=>2016-04-13 18:42:02 -0700, :diff=>256.0}
+        # {:i=>9, :now=>2016-04-13 18:50:34 -0700, :diff=>512.0} # clear_queue!
+
+        Timecop.freeze( now )
+        @i.enqueue_thread_wait
+        @i.flush_thread_wakeup
+        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+
+        assert{ @i.write_count > prev_write_count }
+        assert{ @i.num_errors > prev_num_errors }
+
+        prev_write_count = @i.write_count
+        prev_num_errors = @i.num_errors
+      end
+
+      assert{ @i.buffer.queue.size == 2 }
+      assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
+      assert{ @i.buffer.stage.size == 0 }
+
+      assert{ written_tags.all?{|t| t == 'test.tag.1' } }
+
+      chunks = @i.buffer.queue.dup
+
+      @i.emit("test.tag.3", dummy_event_stream())
+
+      now = @i.next_flush_time
+      Timecop.freeze( now )
+      @i.flush_thread_wakeup
+      waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+
+      logs = @i.log.out.logs
+      assert{ logs.any?{|l| l.start_with?("2016-04-13 18:50:34 -0700 [error]: failed to flush the buffer, and hit limit for retries. dropping all chunks in the buffer queue.") } }
+
+      assert{ @i.buffer.queue.size == 0 }
+      assert{ @i.buffer.stage.size == 1 }
+      assert{ chunks.all?{|c| c.empty? } }
+    end
   end
 
   sub_test_case 'bufferd output for retries with periodical retry' do

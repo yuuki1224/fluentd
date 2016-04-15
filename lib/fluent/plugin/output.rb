@@ -585,22 +585,28 @@ module Fluent
 
           @retry_mutex.synchronize do
             if @retry
-              @retry.step
               @counters_monitor.synchronize{ @num_errors += 1 }
               if @retry.limit?
                 records = @buffer.queued_records
-                log.error "failed to flush the buffer, and hit limit for retries. dropping all chunks in buffer queue.", plugin_id: plugin_id, records: records, error_class: e.class, error: e
+                log.error "failed to flush the buffer, and hit limit for retries. dropping all chunks in the buffer queue.", plugin_id: plugin_id, retry_times: @retry.steps, records: records, error: e
                 log.error_backtrace e.backtrace
-                @buffer.clear!
+                @buffer.clear_queue!
+                log.debug "buffer queue cleared", plugin_id: plugin_id
                 @retry = nil
               else
-                log.warn "failed to flush the buffer#{using_secondary ? ' with secondary output' : ''}.", plugin_id: plugin_id, next_retry: @retry.next_time, chunk: dump_unique_id_hex(chunk.unique_id), error_class: e.class, error: e
+                @retry.step
+                msg = if using_secondary
+                        "failed to flush the buffer with secondary output."
+                      else
+                        "failed to flush the buffer."
+                      end
+                log.warn msg, plugin_id: plugin_id, retry_time: @retry.steps, next_retry: @retry.next_time, chunk: dump_unique_id_hex(chunk.unique_id), error: e
                 log.warn_backtrace e.backtrace
               end
             else
               @retry = retry_state(@buffer_config.retry_randomize)
               @counters_monitor.synchronize{ @num_errors += 1 }
-              log.warn "failed to flush the buffer.", plugin_id: plugin_id, next_retry: @retry.next_time, chunk: dump_unique_id_hex(chunk.unique_id), error_class: e.class, error: e
+              log.warn "failed to flush the buffer.", plugin_id: plugin_id, retry_time: @retry.steps, next_retry: @retry.next_time, chunk: dump_unique_id_hex(chunk.unique_id), error: e
               log.warn_backtrace e.backtrace
             end
           end
