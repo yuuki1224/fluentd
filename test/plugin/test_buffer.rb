@@ -474,7 +474,7 @@ class BufferTest < Test::Unit::TestCase
       assert_equal [@dm2,@dm3,@dm1], @p.metadata_list
     end
 
-    test '#clear_queue! removes all chunks in queue' do
+    test '#clear_queue! removes all chunks in queue, but leaves staged chunks' do
       qchunks = @p.queue.dup
 
       assert_equal [@dm0,@dm1,@dm1], @p.queue.map(&:metadata)
