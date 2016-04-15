@@ -1,5 +1,6 @@
 require_relative '../helper'
 require 'fluent/plugin/buffer/file_chunk'
+require 'fluent/unique_id'
 
 require 'fileutils'
 require 'msgpack'
@@ -99,7 +100,7 @@ class BufferFileChunkTest < Test::Unit::TestCase
     end
 
     def gen_chunk_path(prefix, unique_id)
-      File.join(@chunkdir, "test.#{prefix}#{Fluent::Plugin::UniqueId.hex(unique_id)}.log")
+      File.join(@chunkdir, "test.#{prefix}#{Fluent::UniqueId.hex(unique_id)}.log")
     end
 
     teardown do
