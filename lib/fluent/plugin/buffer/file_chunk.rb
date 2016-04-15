@@ -193,7 +193,7 @@ module Fluent
         def restore_metadata_partially(chunk)
           @unique_id = self.class.unique_id_from_path(chunk.path) || @unique_id
           @records = 0
-          @created_at = chunk.birthtime rescue chunk.ctime # birthtime isn't supported on Windows
+          @created_at = chunk.ctime # birthtime isn't supported on Windows (and Travis?)
           @modified_at = chunk.mtime
 
           @metadata.timekey = nil
